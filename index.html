@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SAI — My Sales</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<header class="topbar" id="topbar" hidden>
+  <div class="topbar__brand">SAI <span>— My Sales</span></div>
+  <div class="topbar__right">
+    <span class="topbar__company" id="topbarCompany"></span>
+    <button class="link-btn" id="btnEditCompany" type="button">Edit company</button>
+    <button class="link-btn" id="btnStartOver" type="button">Start over</button>
+  </div>
+</header>
+
+<main id="app">
+
+  <!-- LANDING -->
+  <section class="screen screen--active" id="screen-landing">
+    <div class="landing">
+      <h1 class="landing__title">SAI <span class="landing__title-sub">— My Sales</span></h1>
+      <p class="landing__tagline">(Synchronise &middot; Analyse &middot; Interpret)</p>
+      <p class="landing__desc">A sales data standardisation tool for D2C brands in India.</p>
+      <button class="btn btn--primary btn--lg" id="btnGetStarted" type="button">Get Started</button>
+    </div>
+  </section>
+
+  <!-- COMPANY SETUP -->
+  <section class="screen" id="screen-company">
+    <div class="card">
+      <h2>Company setup</h2>
+      <p class="muted">Enter your company name once — it will be used across every export.</p>
+      <label class="field">
+        <span>Company name</span>
+        <input type="text" id="inputCompanyName" placeholder="e.g. Acme Foods Pvt Ltd" autocomplete="off" />
+      </label>
+      <div class="actions">
+        <button class="btn btn--primary" id="btnSaveCompany" type="button">Save &amp; Continue</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOME -->
+  <section class="screen" id="screen-home">
+    <div class="home-wrap">
+      <div class="home-header">
+        <button class="btn btn--primary btn--lg" id="btnHomeNewUpload" type="button">+ New Upload</button>
+      </div>
+
+      <div class="home-templates">
+        <div class="home-templates__header">
+          <h2>Your Report Templates</h2>
+          <button class="btn" id="btnNewCategory" type="button">+ New Category</button>
+        </div>
+
+        <div class="inline-form" id="newCategoryForm" hidden>
+          <input type="text" id="inputNewCategory" placeholder="e.g. Sales Report" autocomplete="off" />
+          <button class="btn btn--primary" id="btnSaveCategory" type="button">Add</button>
+          <button class="btn" id="btnCancelCategory" type="button">Cancel</button>
+        </div>
+
+        <p class="empty-state" id="templatesEmptyState" hidden>No templates yet — click New Upload to create your first one.</p>
+
+        <div class="category-list" id="categoryList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FILE UPLOAD -->
+  <section class="screen" id="screen-upload">
+    <div class="card">
+      <h2>Upload sales file</h2>
+      <p class="muted">Accepted formats: CSV, XLS, XLSX.</p>
+      <label class="dropzone" id="dropzone" for="fileInput">
+        <span class="dropzone__icon">⬆</span>
+        <span class="dropzone__text">Drag &amp; drop a file here, or click to browse</span>
+        <span class="dropzone__filename" id="dropzoneFilename"></span>
+      </label>
+      <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" hidden />
+      <p class="error" id="uploadError" hidden></p>
+      <div class="actions">
+        <button class="btn" id="btnUploadBack" type="button">Back</button>
+        <button class="btn btn--primary" id="btnUploadContinue" type="button" disabled>Continue</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- REPORT CATEGORY / TYPE -->
+  <section class="screen" id="screen-category">
+    <div class="card">
+      <h2>Which report is this?</h2>
+      <p class="muted">Pick an existing Category and Report Type, or type new ones to create them.</p>
+      <label class="field">
+        <span>Report Category</span>
+        <input type="text" id="inputCategory" list="categoryDatalist" placeholder="e.g. Marketplace Sales" autocomplete="off" />
+        <datalist id="categoryDatalist"></datalist>
+      </label>
+      <label class="field">
+        <span>Report Type</span>
+        <input type="text" id="inputCatReportType" list="catReportTypeDatalist" placeholder="e.g. Amazon Orders" autocomplete="off" />
+        <datalist id="catReportTypeDatalist"></datalist>
+      </label>
+      <div class="actions">
+        <button class="btn" id="btnCategoryBack" type="button">Back</button>
+        <button class="btn btn--primary" id="btnCategoryContinue" type="button" disabled>Continue</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- COLUMN SELECTION -->
+  <section class="screen" id="screen-columns">
+    <div class="card card--wide">
+      <h2>Select &amp; rename columns</h2>
+      <p class="muted">Report Type: <strong id="columnsReportType"></strong> — uncheck a column to exclude it, and rename any column for your master sheet.</p>
+      <p class="hint" id="columnsAutofillNote" hidden></p>
+
+      <div class="table-toolbar">
+        <button class="btn" id="btnColumnsSelectAll" type="button">Select All</button>
+        <button class="btn" id="btnColumnsDeselectAll" type="button">Deselect All</button>
+      </div>
+
+      <div class="columns-table-wrap">
+        <table class="columns-table">
+          <thead>
+            <tr>
+              <th class="col-check-cell">Include</th>
+              <th>Original column name</th>
+              <th>Rename to</th>
+            </tr>
+          </thead>
+          <tbody id="columnsTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btnColumnsBack" type="button">Back</button>
+        <button class="btn btn--primary" id="btnColumnsNext" type="button">Next</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
