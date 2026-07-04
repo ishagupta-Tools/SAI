@@ -184,7 +184,7 @@
 
         currentFileHeaders = headers;
         currentFileRows = dataRows;
-        console.log("[SAI] Headers read from \"" + file.name + "\" (sheet \"" + firstSheetName + "\"):", currentFileHeaders);
+        console.log("[SAI] First 5 headers read from \"" + file.name + "\" (sheet \"" + firstSheetName + "\"):", currentFileHeaders.slice(0, 5));
 
         state.fileName = file.name;
         dropzoneFilename.textContent = file.name + " (" + dataRows.length + " rows)";
