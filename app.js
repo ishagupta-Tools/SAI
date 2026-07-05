@@ -8,7 +8,8 @@
     company: "sai_company_name",
     categories: "sai_categories",
     columnStructure: "sai_column_structure",
-    sheetPreference: "sai_sheet_preference"
+    sheetPreference: "sai_sheet_preference",
+    formulas: "sai_formulas"
   };
 
   function loadJSON(key, fallback) {
@@ -85,6 +86,22 @@
     saveJSON(STORAGE_KEYS.sheetPreference, all);
   }
 
+  // Formulas (validation checks) built on the Formula Builder screen are
+  // saved per Category + Report Type (same key shape as above), so
+  // reopening a report type later pre-fills whatever was built for it.
+  function formulaKey(category, reportType) {
+    return category + "␟" + reportType;
+  }
+  function getFormulasFor(category, reportType) {
+    var all = loadJSON(STORAGE_KEYS.formulas, {});
+    return all[formulaKey(category, reportType)] || [];
+  }
+  function saveFormulasFor(category, reportType, formulas) {
+    var all = loadJSON(STORAGE_KEYS.formulas, {});
+    all[formulaKey(category, reportType)] = formulas;
+    saveJSON(STORAGE_KEYS.formulas, all);
+  }
+
   /* ---------------------------------------------------------------------
    * App state (in-memory, per session)
    * ------------------------------------------------------------------- */
@@ -94,7 +111,8 @@
     selectedCategory: "",
     selectedReportType: "",
     selectedSheetName: "",
-    selectedHeaderRowIndex: 0
+    selectedHeaderRowIndex: 0,
+    selectedColumns: []
   };
 
   /* ---------------------------------------------------------------------
@@ -266,6 +284,7 @@
     state.fileName = "";
     state.selectedSheetName = "";
     state.selectedHeaderRowIndex = 0;
+    state.selectedColumns = [];
     currentWorkbook = null;
     currentFileHeaders = [];
     currentFileRows = [];
@@ -697,19 +716,248 @@
 
   document.getElementById("btnColumnsNext").addEventListener("click", function () {
     var structure = {};
+    var selectedColumns = [];
     columnsTableBody.querySelectorAll("tr").forEach(function (tr) {
       var header = tr.dataset.header;
       var checkbox = tr.querySelector(".column-include");
       var renameInput = tr.querySelector(".column-rename");
+      var renameTo = renameInput.value.trim() || header;
       structure[header] = {
         include: checkbox.checked,
-        renameTo: renameInput.value.trim() || header
+        renameTo: renameTo
       };
+      if (checkbox.checked) selectedColumns.push(renameTo);
     });
     saveColumnStructureFor(state.selectedCategory, state.selectedReportType, structure);
-    alert("Column selection saved for \"" + state.selectedReportType + "\". The formula builder is coming in Part C.");
-    renderHomeScreen();
-    showScreen("screen-home");
+    state.selectedColumns = selectedColumns;
+    goToFormulaStep();
+  });
+
+  /* ---------------------------------------------------------------------
+   * Screen: Formula builder
+   *
+   * Column dropdowns are populated solely from state.selectedColumns (the
+   * included + renamed columns from the Column Selection screen), so this
+   * screen is always in sync with whatever the user just chose to keep.
+   * If a saved formula references a column that no longer exists in the
+   * current selection, it's still added as an extra option so the saved
+   * choice stays visible instead of silently reverting to blank.
+   * ------------------------------------------------------------------- */
+  var formulaList = document.getElementById("formulaList");
+  var formulaEmptyState = document.getElementById("formulaEmptyState");
+  var formulaSuccessMsg = document.getElementById("formulaSuccessMsg");
+  var btnFormulaNext = document.getElementById("btnFormulaNext");
+
+  function goToFormulaStep() {
+    renderFormulaScreen();
+    showScreen("screen-formula");
+  }
+
+  function updateFormulaEmptyState() {
+    formulaEmptyState.hidden = formulaList.children.length > 0;
+  }
+
+  function buildColumnSelect(selectEl, selectedValue) {
+    selectEl.innerHTML = "";
+    var placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select column…";
+    selectEl.appendChild(placeholder);
+
+    var cols = state.selectedColumns.slice();
+    if (selectedValue && cols.indexOf(selectedValue) === -1) cols.push(selectedValue);
+    cols.forEach(function (col) {
+      var opt = document.createElement("option");
+      opt.value = col;
+      opt.textContent = col;
+      selectEl.appendChild(opt);
+    });
+    selectEl.value = selectedValue || "";
+  }
+
+  function buildOperandSelect(selectEl, selectedColumnValue) {
+    selectEl.innerHTML = "";
+    var placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select column…";
+    selectEl.appendChild(placeholder);
+
+    var numberOpt = document.createElement("option");
+    numberOpt.value = "__number__";
+    numberOpt.textContent = "Enter a number…";
+    selectEl.appendChild(numberOpt);
+
+    var cols = state.selectedColumns.slice();
+    if (selectedColumnValue && cols.indexOf(selectedColumnValue) === -1) cols.push(selectedColumnValue);
+    cols.forEach(function (col) {
+      var opt = document.createElement("option");
+      opt.value = col;
+      opt.textContent = col;
+      selectEl.appendChild(opt);
+    });
+    selectEl.value = selectedColumnValue || "";
+  }
+
+  function createStepRow(stepData) {
+    var row = document.createElement("div");
+    row.className = "formula-step";
+
+    var operatorSelect = document.createElement("select");
+    operatorSelect.className = "formula-operator";
+    [["+", "+"], ["-", "−"], ["*", "×"], ["/", "÷"]].forEach(function (pair) {
+      var opt = document.createElement("option");
+      opt.value = pair[0];
+      opt.textContent = pair[1];
+      operatorSelect.appendChild(opt);
+    });
+    operatorSelect.value = (stepData && stepData.operator) || "+";
+    row.appendChild(operatorSelect);
+
+    var operandSelect = document.createElement("select");
+    operandSelect.className = "formula-operand-select";
+    var isNumber = stepData && stepData.operandType === "number";
+    buildOperandSelect(operandSelect, isNumber ? "" : (stepData && stepData.operandColumn) || "");
+
+    var numberInput = document.createElement("input");
+    numberInput.type = "number";
+    numberInput.step = "any";
+    numberInput.placeholder = "Value";
+    numberInput.className = "formula-operand-number";
+
+    if (isNumber) {
+      operandSelect.value = "__number__";
+      numberInput.value = stepData.operandNumber !== undefined ? stepData.operandNumber : "";
+      numberInput.hidden = false;
+    } else {
+      numberInput.hidden = true;
+    }
+
+    operandSelect.addEventListener("change", function () {
+      if (operandSelect.value === "__number__") {
+        numberInput.hidden = false;
+        numberInput.focus();
+      } else {
+        numberInput.hidden = true;
+      }
+    });
+
+    row.appendChild(operandSelect);
+    row.appendChild(numberInput);
+
+    var removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "link-btn formula-step-remove";
+    removeBtn.textContent = "Remove step";
+    removeBtn.addEventListener("click", function () { row.remove(); });
+    row.appendChild(removeBtn);
+
+    return row;
+  }
+
+  function addFormulaRow(formulaData) {
+    var row = document.createElement("div");
+    row.className = "formula-row";
+
+    var header = document.createElement("div");
+    header.className = "formula-row__header";
+
+    var nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "formula-name";
+    nameInput.placeholder = "e.g. Net Payout Check";
+    nameInput.value = (formulaData && formulaData.name) || "";
+    header.appendChild(nameInput);
+
+    var deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "btn formula-delete";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", function () {
+      row.remove();
+      updateFormulaEmptyState();
+    });
+    header.appendChild(deleteBtn);
+    row.appendChild(header);
+
+    var body = document.createElement("div");
+    body.className = "formula-row__body";
+
+    var firstColumnSelect = document.createElement("select");
+    firstColumnSelect.className = "formula-first-column";
+    buildColumnSelect(firstColumnSelect, formulaData && formulaData.firstColumn);
+    body.appendChild(firstColumnSelect);
+
+    var stepsWrap = document.createElement("div");
+    stepsWrap.className = "formula-steps";
+    body.appendChild(stepsWrap);
+
+    var addStepBtn = document.createElement("button");
+    addStepBtn.type = "button";
+    addStepBtn.className = "btn formula-add-step";
+    addStepBtn.textContent = "+ Add Step";
+    addStepBtn.addEventListener("click", function () {
+      stepsWrap.appendChild(createStepRow());
+    });
+    body.appendChild(addStepBtn);
+
+    row.appendChild(body);
+
+    var steps = (formulaData && formulaData.steps) || [];
+    steps.forEach(function (s) { stepsWrap.appendChild(createStepRow(s)); });
+    if (!formulaData) {
+      stepsWrap.appendChild(createStepRow());
+    }
+
+    formulaList.appendChild(row);
+    updateFormulaEmptyState();
+    return row;
+  }
+
+  function renderFormulaScreen() {
+    formulaList.innerHTML = "";
+    formulaSuccessMsg.hidden = true;
+
+    var saved = getFormulasFor(state.selectedCategory, state.selectedReportType);
+    saved.forEach(function (f) { addFormulaRow(f); });
+
+    updateFormulaEmptyState();
+  }
+
+  function readFormulasFromDOM() {
+    var formulas = [];
+    formulaList.querySelectorAll(".formula-row").forEach(function (row) {
+      var name = row.querySelector(".formula-name").value.trim();
+      var firstColumn = row.querySelector(".formula-first-column").value;
+      var steps = [];
+      row.querySelectorAll(".formula-step").forEach(function (stepEl) {
+        var operator = stepEl.querySelector(".formula-operator").value;
+        var operandSelect = stepEl.querySelector(".formula-operand-select");
+        var isNumber = operandSelect.value === "__number__";
+        steps.push({
+          operator: operator,
+          operandType: isNumber ? "number" : "column",
+          operandColumn: isNumber ? "" : operandSelect.value,
+          operandNumber: isNumber ? stepEl.querySelector(".formula-operand-number").value : ""
+        });
+      });
+      formulas.push({ name: name, firstColumn: firstColumn, steps: steps });
+    });
+    return formulas;
+  }
+
+  document.getElementById("btnAddFormula").addEventListener("click", function () {
+    addFormulaRow(null);
+  });
+
+  document.getElementById("btnFormulaBack").addEventListener("click", function () {
+    showScreen("screen-columns");
+  });
+
+  btnFormulaNext.addEventListener("click", function () {
+    var formulas = readFormulasFromDOM();
+    saveFormulasFor(state.selectedCategory, state.selectedReportType, formulas);
+    formulaSuccessMsg.textContent = "Formulas saved for \"" + state.selectedReportType + "\".";
+    formulaSuccessMsg.hidden = false;
   });
 
   /* ---------------------------------------------------------------------
