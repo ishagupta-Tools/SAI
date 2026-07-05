@@ -355,3 +355,67 @@ html, body {
 .header-row-preview-row:hover { background: #f4f8ff; }
 .header-row-preview-row--selected { background: #eef2ff; }
 .header-row-preview-row--selected td { color: var(--color-text); }
+
+/* Formula builder */
+.formula-toolbar { display: flex; margin-bottom: 16px; }
+.formula-list { display: flex; flex-direction: column; gap: 16px; margin-bottom: 8px; }
+.formula-row {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  background: #fafbfd;
+}
+.formula-row__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.formula-name {
+  flex: 1;
+  padding: 9px 11px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: #fff;
+}
+.formula-name:focus { outline: none; border-color: var(--color-primary); }
+.formula-delete { color: var(--color-danger); border-color: #f3c6c0; }
+.formula-delete:hover { background: var(--color-danger-bg); }
+
+.formula-row__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.formula-first-column,
+.formula-operator,
+.formula-operand-select {
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+}
+.formula-operand-number {
+  width: 110px;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+}
+.formula-steps { display: flex; flex-wrap: wrap; gap: 10px; }
+.formula-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.formula-step-remove { font-size: 12px; white-space: nowrap; }
+.formula-add-step { font-size: 13px; padding: 8px 14px; }
