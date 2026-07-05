@@ -7,7 +7,8 @@
   var STORAGE_KEYS = {
     company: "sai_company_name",
     categories: "sai_categories",
-    columnStructure: "sai_column_structure"
+    columnStructure: "sai_column_structure",
+    sheetPreference: "sai_sheet_preference"
   };
 
   function loadJSON(key, fallback) {
@@ -68,6 +69,22 @@
     saveJSON(STORAGE_KEYS.columnStructure, all);
   }
 
+  // Which sheet holds the data is remembered per Category + Report Type
+  // (same key shape as the column structure above), so a report type that's
+  // always in, say, "Sheet2" doesn't need to be picked again on every upload.
+  function sheetPreferenceKey(category, reportType) {
+    return category + "␟" + reportType;
+  }
+  function getSheetPreference(category, reportType) {
+    var all = loadJSON(STORAGE_KEYS.sheetPreference, {});
+    return all[sheetPreferenceKey(category, reportType)] || "";
+  }
+  function saveSheetPreference(category, reportType, sheetName) {
+    var all = loadJSON(STORAGE_KEYS.sheetPreference, {});
+    all[sheetPreferenceKey(category, reportType)] = sheetName;
+    saveJSON(STORAGE_KEYS.sheetPreference, all);
+  }
+
   /* ---------------------------------------------------------------------
    * App state (in-memory, per session)
    * ------------------------------------------------------------------- */
@@ -75,7 +92,9 @@
     companyName: "",
     fileName: "",
     selectedCategory: "",
-    selectedReportType: ""
+    selectedReportType: "",
+    selectedSheetName: "",
+    selectedHeaderRowIndex: 0
   };
 
   /* ---------------------------------------------------------------------
@@ -97,9 +116,15 @@
    * File upload + parsing
    *
    * currentFileHeaders is the ONLY source the column selection screen may
-   * read from. It is set in exactly one place (readUploadedFile, below,
-   * on a successful parse) and cleared in exactly one other place
-   * (resetFileState). Nothing here ever touches localStorage.
+   * read from. It is set in exactly one place (extractHeadersAndRows,
+   * called once the user's chosen sheet + header row are known) and
+   * cleared in exactly one other place (resetFileState). Nothing here
+   * ever touches localStorage.
+   *
+   * currentWorkbook holds the parsed, multi-sheet workbook for the
+   * just-uploaded file so the Sheet Selection and Header Row screens can
+   * re-derive headers/rows for whichever sheet + row the user picks,
+   * without re-reading the file from disk.
    * ------------------------------------------------------------------- */
   var fileInput = document.getElementById("fileInput");
   var dropzone = document.getElementById("dropzone");
@@ -107,8 +132,10 @@
   var uploadError = document.getElementById("uploadError");
   var btnUploadContinue = document.getElementById("btnUploadContinue");
 
+  var currentWorkbook = null;
   var currentFileHeaders = [];
   var currentFileRows = [];
+  var cameFromSheetScreen = false;
 
   dropzone.addEventListener("click", function () { fileInput.click(); });
   dropzone.addEventListener("dragover", function (e) { e.preventDefault(); dropzone.classList.add("dropzone--drag"); });
@@ -132,6 +159,7 @@
 
   function readUploadedFile(file) {
     uploadError.hidden = true;
+    currentWorkbook = null;
     currentFileHeaders = [];
     currentFileRows = [];
     btnUploadContinue.disabled = true;
@@ -151,49 +179,54 @@
         // raw:true keeps every cell as the literal value from the file
         // instead of letting SheetJS silently reinterpret ambiguous text.
         var workbook = XLSX.read(data, { type: "array", raw: true });
+        if (!workbook.SheetNames.length) throw new Error("File appears to be empty.");
 
-        var firstSheetName = workbook.SheetNames[0];
-        var firstSheet = workbook.Sheets[firstSheetName];
-        var sheetRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: "", raw: true });
-        if (!sheetRows.length) throw new Error("File appears to be empty.");
-
-        // Headers come only from row 1 of the first sheet.
-        var headerRow = sheetRows[0];
-        var headers = [];
-        var headerColumnIndexes = [];
-        for (var col = 0; col < headerRow.length; col++) {
-          var headerText = String(headerRow[col]).trim();
-          if (headerText !== "") {
-            headers.push(headerText);
-            headerColumnIndexes.push(col);
-          }
-        }
-        if (!headers.length) throw new Error("Could not find a header row.");
-
-        var dataRows = [];
-        for (var r = 1; r < sheetRows.length; r++) {
-          var rawRow = sheetRows[r];
-          var isBlankRow = !rawRow || rawRow.every(function (cell) { return cell === "" || cell === null || cell === undefined; });
-          if (isBlankRow) continue;
-          var rowObj = {};
-          for (var c = 0; c < headers.length; c++) {
-            rowObj[headers[c]] = rawRow[headerColumnIndexes[c]];
-          }
-          dataRows.push(rowObj);
-        }
-
-        currentFileHeaders = headers;
-        currentFileRows = dataRows;
-        console.log("[SAI] First 5 headers read from \"" + file.name + "\" (sheet \"" + firstSheetName + "\"):", currentFileHeaders.slice(0, 5));
-
+        currentWorkbook = workbook;
         state.fileName = file.name;
-        dropzoneFilename.textContent = file.name + " (" + dataRows.length + " rows)";
+        dropzoneFilename.textContent = file.name;
+        console.log("[SAI] Workbook \"" + file.name + "\" parsed with " + workbook.SheetNames.length + " sheet(s):", workbook.SheetNames);
+
         btnUploadContinue.disabled = false;
       } catch (err) {
         showUploadError("Could not read this file: " + err.message);
       }
     };
     reader.readAsArrayBuffer(file);
+  }
+
+  // Shared by the default single-sheet path and the Header Row screen: pulls
+  // the header row + all data rows out of one sheet, given which row (0-based)
+  // holds the column names.
+  function extractHeadersAndRows(sheet, headerRowIndex) {
+    var sheetRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
+    if (!sheetRows.length) throw new Error("Sheet appears to be empty.");
+    if (headerRowIndex >= sheetRows.length) throw new Error("Selected header row is out of range.");
+
+    var headerRow = sheetRows[headerRowIndex];
+    var headers = [];
+    var headerColumnIndexes = [];
+    for (var col = 0; col < headerRow.length; col++) {
+      var headerText = String(headerRow[col]).trim();
+      if (headerText !== "") {
+        headers.push(headerText);
+        headerColumnIndexes.push(col);
+      }
+    }
+    if (!headers.length) throw new Error("Could not find a header row.");
+
+    var dataRows = [];
+    for (var r = headerRowIndex + 1; r < sheetRows.length; r++) {
+      var rawRow = sheetRows[r];
+      var isBlankRow = !rawRow || rawRow.every(function (cell) { return cell === "" || cell === null || cell === undefined; });
+      if (isBlankRow) continue;
+      var rowObj = {};
+      for (var c = 0; c < headers.length; c++) {
+        rowObj[headers[c]] = rawRow[headerColumnIndexes[c]];
+      }
+      dataRows.push(rowObj);
+    }
+
+    return { headers: headers, rows: dataRows };
   }
 
   /* ---------------------------------------------------------------------
@@ -231,8 +264,12 @@
 
   function resetFileState() {
     state.fileName = "";
+    state.selectedSheetName = "";
+    state.selectedHeaderRowIndex = 0;
+    currentWorkbook = null;
     currentFileHeaders = [];
     currentFileRows = [];
+    cameFromSheetScreen = false;
     btnUploadContinue.disabled = true;
     dropzoneFilename.textContent = "";
     fileInput.value = "";
@@ -435,8 +472,166 @@
     addReportTypeToCategory(cat, type);
     state.selectedCategory = cat;
     state.selectedReportType = type;
-    renderColumnScreen();
-    showScreen("screen-columns");
+    proceedPastCategoryScreen();
+  });
+
+  /* ---------------------------------------------------------------------
+   * Screen: Sheet selection
+   *
+   * Only shown when the uploaded file has more than one sheet. If a sheet
+   * name was already saved for this Category + Report Type combo (and
+   * that sheet still exists in this file), it's used automatically and
+   * this screen is skipped entirely.
+   * ------------------------------------------------------------------- */
+  var sheetList = document.getElementById("sheetList");
+
+  function proceedPastCategoryScreen() {
+    var sheetNames = currentWorkbook ? currentWorkbook.SheetNames : [];
+
+    if (sheetNames.length > 1) {
+      var saved = getSheetPreference(state.selectedCategory, state.selectedReportType);
+      if (saved && sheetNames.indexOf(saved) !== -1) {
+        cameFromSheetScreen = false;
+        state.selectedSheetName = saved;
+        state.selectedHeaderRowIndex = 0;
+        goToHeaderRowStep();
+      } else {
+        cameFromSheetScreen = true;
+        renderSheetScreen();
+        showScreen("screen-sheet");
+      }
+    } else {
+      cameFromSheetScreen = false;
+      state.selectedSheetName = sheetNames[0] || "";
+      state.selectedHeaderRowIndex = 0;
+      goToHeaderRowStep();
+    }
+  }
+
+  function renderSheetScreen() {
+    sheetList.innerHTML = "";
+    currentWorkbook.SheetNames.forEach(function (name) {
+      var tile = document.createElement("button");
+      tile.type = "button";
+      tile.className = "sheet-tile";
+      tile.textContent = name;
+      tile.addEventListener("click", function () {
+        state.selectedSheetName = name;
+        state.selectedHeaderRowIndex = 0;
+        saveSheetPreference(state.selectedCategory, state.selectedReportType, name);
+        goToHeaderRowStep();
+      });
+      sheetList.appendChild(tile);
+    });
+  }
+
+  document.getElementById("btnSheetBack").addEventListener("click", function () {
+    showScreen("screen-category");
+  });
+
+  /* ---------------------------------------------------------------------
+   * Screen: Header row selection
+   *
+   * Shows the first 20 rows of the selected sheet so the user can click
+   * whichever row actually holds the column names (not always row 1).
+   * ------------------------------------------------------------------- */
+  var headerRowPreviewBody = document.getElementById("headerRowPreviewBody");
+  var btnHeaderRowContinue = document.getElementById("btnHeaderRowContinue");
+  var btnHeaderRowChangeSheet = document.getElementById("btnHeaderRowChangeSheet");
+  var HEADER_ROW_PREVIEW_LIMIT = 20;
+
+  function goToHeaderRowStep() {
+    renderHeaderRowScreen();
+    showScreen("screen-header-row");
+  }
+
+  function renderHeaderRowScreen() {
+    document.getElementById("headerRowSheetName").textContent = state.selectedSheetName;
+    btnHeaderRowChangeSheet.hidden = !(currentWorkbook && currentWorkbook.SheetNames.length > 1);
+
+    var sheet = currentWorkbook.Sheets[state.selectedSheetName];
+    var previewRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true }).slice(0, HEADER_ROW_PREVIEW_LIMIT);
+
+    var maxCols = 0;
+    previewRows.forEach(function (row) { if (row.length > maxCols) maxCols = row.length; });
+
+    headerRowPreviewBody.innerHTML = "";
+    previewRows.forEach(function (row, idx) {
+      var tr = document.createElement("tr");
+      tr.className = "header-row-preview-row";
+      if (idx === state.selectedHeaderRowIndex) tr.classList.add("header-row-preview-row--selected");
+
+      var tdSelect = document.createElement("td");
+      tdSelect.className = "header-row-select-cell";
+      var radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "headerRowChoice";
+      radio.checked = idx === state.selectedHeaderRowIndex;
+      tdSelect.appendChild(radio);
+      tr.appendChild(tdSelect);
+
+      var tdNum = document.createElement("td");
+      tdNum.className = "header-row-num-cell";
+      tdNum.textContent = "Row " + (idx + 1);
+      tr.appendChild(tdNum);
+
+      for (var c = 0; c < maxCols; c++) {
+        var td = document.createElement("td");
+        var cell = row[c];
+        td.textContent = cell === undefined || cell === null ? "" : cell;
+        tr.appendChild(td);
+      }
+
+      function selectRow() {
+        state.selectedHeaderRowIndex = idx;
+        headerRowPreviewBody.querySelectorAll(".header-row-preview-row").forEach(function (r) {
+          r.classList.remove("header-row-preview-row--selected");
+        });
+        headerRowPreviewBody.querySelectorAll('input[name="headerRowChoice"]').forEach(function (r, i) {
+          r.checked = i === idx;
+        });
+        tr.classList.add("header-row-preview-row--selected");
+        btnHeaderRowContinue.disabled = false;
+      }
+      tr.addEventListener("click", selectRow);
+      radio.addEventListener("click", function (e) { e.stopPropagation(); selectRow(); });
+
+      headerRowPreviewBody.appendChild(tr);
+    });
+
+    btnHeaderRowContinue.disabled = previewRows.length === 0;
+  }
+
+  btnHeaderRowChangeSheet.addEventListener("click", function () {
+    cameFromSheetScreen = true;
+    renderSheetScreen();
+    showScreen("screen-sheet");
+  });
+
+  document.getElementById("btnHeaderRowBack").addEventListener("click", function () {
+    if (cameFromSheetScreen) {
+      renderSheetScreen();
+      showScreen("screen-sheet");
+    } else {
+      showScreen("screen-category");
+    }
+  });
+
+  btnHeaderRowContinue.addEventListener("click", function () {
+    try {
+      var sheet = currentWorkbook.Sheets[state.selectedSheetName];
+      var extracted = extractHeadersAndRows(sheet, state.selectedHeaderRowIndex);
+      currentFileHeaders = extracted.headers;
+      currentFileRows = extracted.rows;
+      console.log(
+        "[SAI] First 5 headers extracted from sheet \"" + state.selectedSheetName + "\" (header row " + (state.selectedHeaderRowIndex + 1) + "):",
+        currentFileHeaders.slice(0, 5)
+      );
+      renderColumnScreen();
+      showScreen("screen-columns");
+    } catch (err) {
+      alert("Could not read headers: " + err.message);
+    }
   });
 
   /* ---------------------------------------------------------------------
@@ -452,8 +647,8 @@
 
     columnsTableBody.innerHTML = "";
     // This screen must show exactly the file's own headers and nothing else.
-    // Every row is built solely from currentFileHeaders (set in
-    // readUploadedFile() from the just-uploaded file's first row) with
+    // Every row is built solely from currentFileHeaders (set by
+    // extractHeadersAndRows() once the sheet + header row are chosen) with
     // include=true and renameTo=header as the only defaults — localStorage
     // is never read here, so a value saved in a previous session can never
     // resurface as if it came from the current file.
