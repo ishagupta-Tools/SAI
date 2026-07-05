@@ -111,6 +111,41 @@
     </div>
   </section>
 
+  <!-- SHEET SELECTION -->
+  <section class="screen" id="screen-sheet">
+    <div class="card">
+      <h2>Which sheet contains your data?</h2>
+      <p class="muted">This file has more than one sheet — pick the one to use.</p>
+      <div class="sheet-list" id="sheetList"></div>
+      <div class="actions">
+        <button class="btn" id="btnSheetBack" type="button">Back</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- HEADER ROW SELECTION -->
+  <section class="screen" id="screen-header-row">
+    <div class="card card--wide">
+      <h2>Which row contains your column headers?</h2>
+      <p class="muted">
+        Sheet: <strong id="headerRowSheetName"></strong>
+        <button class="link-btn" id="btnHeaderRowChangeSheet" type="button" hidden>(change sheet)</button>
+        — click the row below that holds your column names.
+      </p>
+
+      <div class="header-row-preview-wrap">
+        <table class="header-row-preview-table">
+          <tbody id="headerRowPreviewBody"></tbody>
+        </table>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btnHeaderRowBack" type="button">Back</button>
+        <button class="btn btn--primary" id="btnHeaderRowContinue" type="button" disabled>Continue</button>
+      </div>
+    </div>
+  </section>
+
   <!-- COLUMN SELECTION -->
   <section class="screen" id="screen-columns">
     <div class="card card--wide">
