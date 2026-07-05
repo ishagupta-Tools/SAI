@@ -178,6 +178,28 @@
     </div>
   </section>
 
+  <!-- FORMULA BUILDER -->
+  <section class="screen" id="screen-formula">
+    <div class="card card--wide">
+      <h2>Add Validation Checks</h2>
+      <p class="muted">Each formula becomes a new calculated column added to every row.</p>
+
+      <div class="formula-toolbar">
+        <button class="btn" id="btnAddFormula" type="button">+ Add Formula</button>
+      </div>
+
+      <p class="empty-state" id="formulaEmptyState" hidden>No formulas yet — click + Add Formula to create your first validation check.</p>
+      <div class="formula-list" id="formulaList"></div>
+
+      <p class="hint" id="formulaSuccessMsg" hidden></p>
+
+      <div class="actions actions--split">
+        <button class="btn" id="btnFormulaBack" type="button">Back</button>
+        <button class="btn btn--primary" id="btnFormulaNext" type="button">Next</button>
+      </div>
+    </div>
+  </section>
+
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
