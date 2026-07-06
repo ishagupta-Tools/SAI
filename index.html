@@ -53,19 +53,12 @@
 
       <div class="home-templates">
         <div class="home-templates__header">
-          <h2>Your Report Templates</h2>
-          <button class="btn" id="btnNewCategory" type="button">+ New Category</button>
+          <h2>Your Master Reports</h2>
         </div>
 
-        <div class="inline-form" id="newCategoryForm" hidden>
-          <input type="text" id="inputNewCategory" placeholder="e.g. Sales Report" autocomplete="off" />
-          <button class="btn btn--primary" id="btnSaveCategory" type="button">Add</button>
-          <button class="btn" id="btnCancelCategory" type="button">Cancel</button>
-        </div>
+        <p class="empty-state" id="templatesEmptyState" hidden>No Master Reports yet — click New Upload to create your first one.</p>
 
-        <p class="empty-state" id="templatesEmptyState" hidden>No templates yet — click New Upload to create your first one.</p>
-
-        <div class="category-list" id="categoryList"></div>
+        <div class="master-report-list" id="masterReportList"></div>
       </div>
     </div>
   </section>
@@ -89,24 +82,35 @@
     </div>
   </section>
 
-  <!-- REPORT CATEGORY / TYPE -->
-  <section class="screen" id="screen-category">
+  <!-- MASTER REPORT / REPORT TYPE -->
+  <section class="screen" id="screen-master-report">
     <div class="card">
-      <h2>Which report is this?</h2>
-      <p class="muted">Pick an existing Category and Report Type, or type new ones to create them.</p>
-      <label class="field">
-        <span>Report Category</span>
-        <input type="text" id="inputCategory" list="categoryDatalist" placeholder="e.g. Marketplace Sales" autocomplete="off" />
-        <datalist id="categoryDatalist"></datalist>
+      <h2>Name your Master Report</h2>
+      <p class="muted">Pick an existing Master Report and Report Type, or type new ones to create them.</p>
+
+      <div class="field" id="masterReportLockedWrap" hidden>
+        <span>Master Report</span>
+        <p class="locked-value">
+          <strong id="masterReportLockedName"></strong>
+          <button class="link-btn" id="btnMasterReportChange" type="button">(change)</button>
+        </p>
+      </div>
+
+      <label class="field" id="masterReportInputWrap">
+        <span>Master Report name</span>
+        <input type="text" id="inputMasterReport" list="masterReportDatalist" placeholder="e.g. June 2026 MIS" autocomplete="off" />
+        <datalist id="masterReportDatalist"></datalist>
       </label>
+
       <label class="field">
         <span>Report Type</span>
-        <input type="text" id="inputCatReportType" list="catReportTypeDatalist" placeholder="e.g. Amazon Orders" autocomplete="off" />
-        <datalist id="catReportTypeDatalist"></datalist>
+        <input type="text" id="inputReportType" list="reportTypeDatalist" placeholder="e.g. Amazon Orders" autocomplete="off" />
+        <datalist id="reportTypeDatalist"></datalist>
       </label>
+
       <div class="actions">
-        <button class="btn" id="btnCategoryBack" type="button">Back</button>
-        <button class="btn btn--primary" id="btnCategoryContinue" type="button" disabled>Continue</button>
+        <button class="btn" id="btnMasterReportBack" type="button">Back</button>
+        <button class="btn btn--primary" id="btnMasterReportContinue" type="button" disabled>Continue</button>
       </div>
     </div>
   </section>
@@ -152,10 +156,18 @@
       <h2>Select &amp; rename columns</h2>
       <p class="muted">Report Type: <strong id="columnsReportType"></strong> — uncheck a column to exclude it, and rename any column for your master sheet.</p>
       <p class="hint" id="columnsAutofillNote" hidden></p>
+      <div class="banner banner--warn" id="columnsMismatchBanner" hidden>
+        <p id="columnsMismatchText"></p>
+        <div class="banner__actions">
+          <button class="btn" id="btnColumnsMismatchUpdate" type="button">Update template</button>
+          <button class="btn" id="btnColumnsMismatchRemap" type="button">Remap manually</button>
+        </div>
+      </div>
 
       <div class="table-toolbar">
         <button class="btn" id="btnColumnsSelectAll" type="button">Select All</button>
         <button class="btn" id="btnColumnsDeselectAll" type="button">Deselect All</button>
+        <button class="btn" id="btnColumnsClearDate" type="button">No date column in this file</button>
       </div>
 
       <div class="columns-table-wrap">
@@ -165,6 +177,7 @@
               <th class="col-check-cell">Include</th>
               <th>Original column name</th>
               <th>Rename to</th>
+              <th class="col-check-cell">Date column</th>
             </tr>
           </thead>
           <tbody id="columnsTableBody"></tbody>
@@ -191,11 +204,44 @@
       <p class="empty-state" id="formulaEmptyState" hidden>No formulas yet — click + Add Formula to create your first validation check.</p>
       <div class="formula-list" id="formulaList"></div>
 
-      <p class="hint" id="formulaSuccessMsg" hidden></p>
+      <p class="error" id="formulaErrorMsg" hidden></p>
 
       <div class="actions actions--split">
         <button class="btn" id="btnFormulaBack" type="button">Back</button>
         <button class="btn btn--primary" id="btnFormulaNext" type="button">Next</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- PREVIEW & EXPORT -->
+  <section class="screen" id="screen-preview">
+    <div class="card card--wide">
+      <h2>Preview &amp; export</h2>
+      <div class="preview-header">
+        <div>
+          <h3 id="previewMasterReportName"></h3>
+          <p class="muted" id="previewMeta"></p>
+        </div>
+        <div class="chip-list" id="previewReportTypeChips"></div>
+      </div>
+
+      <p class="hint" id="previewExportMsg" hidden></p>
+
+      <div class="header-row-preview-wrap">
+        <table class="header-row-preview-table">
+          <thead>
+            <tr id="previewTableHeadRow"></tr>
+          </thead>
+          <tbody id="previewTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="actions actions--split">
+        <button class="btn" id="btnPreviewHome" type="button">Back to Home</button>
+        <div class="actions__group">
+          <button class="btn" id="btnPreviewAddReportType" type="button">Add Another Report Type</button>
+          <button class="btn btn--primary" id="btnPreviewGenerate" type="button">Generate Master Report</button>
+        </div>
       </div>
     </div>
   </section>
@@ -206,4 +252,3 @@
 <script src="app.js"></script>
 </body>
 </html>
-
