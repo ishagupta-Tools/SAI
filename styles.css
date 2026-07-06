@@ -197,6 +197,26 @@ html, body {
   margin-bottom: 14px;
 }
 
+.master-report-card--progress { border-left: 3px solid var(--color-warn); }
+.progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-border);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.progress-bar__fill {
+  height: 100%;
+  background: var(--color-warn);
+  border-radius: 999px;
+}
+.master-report-card__resume {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 /* Card */
 .card {
   background: var(--color-card);
@@ -301,6 +321,35 @@ html, body {
 }
 .btn--primary:hover { background: var(--color-primary-dark); }
 .btn--lg { padding: 14px 30px; font-size: 16px; }
+.btn--danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: #fff;
+}
+.btn--danger:hover { background: #8f1c13; }
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 24, 33, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+.modal-overlay[hidden] { display: none; }
+.modal {
+  background: var(--color-card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px 30px;
+  width: 100%;
+  max-width: 420px;
+}
+.modal p { margin: 0 0 22px; font-size: 14px; line-height: 1.5; }
+.modal__actions { display: flex; justify-content: flex-end; gap: 12px; }
 
 /* Dropzone */
 .dropzone {
@@ -354,6 +403,47 @@ html, body {
 .columns-table input[type="checkbox"],
 .columns-table input[type="radio"] { width: 16px; height: 16px; }
 .col-check-cell { text-align: center; width: 70px; }
+.columns-table select.column-rename-select {
+  width: 100%;
+  min-width: 180px;
+  padding: 7px 8px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  margin-bottom: 6px;
+}
+.columns-table input.column-rename-new { margin-top: 0; }
+
+/* Missing columns (defaults for a Report Type's second+ file) */
+.missing-columns-wrap {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 20px;
+  background: #fafbfd;
+}
+.missing-columns-wrap h3 { margin: 0 0 4px; font-size: 14px; }
+.missing-columns-wrap .muted { margin-bottom: 14px; }
+.missing-columns-list { display: flex; flex-direction: column; gap: 10px; }
+.missing-column-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.missing-column-row__name {
+  min-width: 160px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.missing-column-row input[type="text"] {
+  flex: 1;
+  padding: 7px 8px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+}
 
 /* Sheet selection */
 .sheet-list {
@@ -417,12 +507,25 @@ html, body {
   padding: 16px 18px;
   background: #fafbfd;
 }
+.formula-row--dragging { opacity: 0.4; }
+.formula-row--drag-over {
+  box-shadow: inset 0 2px 0 var(--color-primary), inset 0 -2px 0 var(--color-primary);
+}
 .formula-row__header {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-bottom: 14px;
 }
+.formula-drag-handle {
+  cursor: grab;
+  color: var(--color-muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 2px;
+  user-select: none;
+}
+.formula-drag-handle:active { cursor: grabbing; }
 .formula-name {
   flex: 1;
   padding: 9px 11px;
@@ -436,41 +539,92 @@ html, body {
 .formula-delete { color: var(--color-danger); border-color: #f3c6c0; }
 .formula-delete:hover { background: var(--color-danger-bg); }
 
-.formula-row__body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-.formula-first-column,
-.formula-operator,
-.formula-operand-select {
-  padding: 8px 10px;
-  font-size: 13px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: #fff;
-}
-.formula-operand-number {
-  width: 110px;
-  padding: 8px 10px;
-  font-size: 13px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: #fff;
-}
-.formula-steps { display: flex; flex-wrap: wrap; gap: 10px; }
-.formula-step {
+.formula-row__body { display: block; }
+
+.formula-expr-bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: #fff;
+}
+.formula-expr-bar:focus-within { border-color: var(--color-primary); }
+.formula-expr-prefix { font-weight: 700; color: var(--color-muted); }
+.formula-expr-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 14px;
+  font-family: inherit;
+  background: transparent;
+}
+
+.formula-autocomplete {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
   background: #fff;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
-  padding: 6px 8px;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  z-index: 20;
+  max-height: 220px;
+  overflow-y: auto;
 }
-.formula-step-remove { font-size: 12px; white-space: nowrap; }
-.formula-add-step { font-size: 13px; padding: 8px 14px; }
+.formula-autocomplete[hidden] { display: none; }
+.formula-autocomplete-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.formula-autocomplete-item--active,
+.formula-autocomplete-item:hover { background: #f4f8ff; }
+.formula-autocomplete-name { font-weight: 600; color: var(--color-text); }
+.formula-autocomplete-origin {
+  font-size: 11px;
+  color: var(--color-muted);
+  background: #f4f6f9;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.formula-autocomplete-empty { padding: 10px 12px; font-size: 13px; color: var(--color-muted); }
+
+.formula-expr-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  min-height: 22px;
+}
+.formula-expr-preview-empty { color: var(--color-muted); font-size: 13px; font-style: italic; }
+.formula-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: var(--color-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.formula-pill--unknown { background: var(--color-danger-bg); color: var(--color-danger); }
+.formula-token-op,
+.formula-token-number {
+  font-size: 13px;
+  color: var(--color-muted);
+  font-weight: 600;
+}
 
 /* Preview & export */
 .preview-header {
@@ -482,3 +636,18 @@ html, body {
 }
 .preview-header h3 { margin: 0 0 4px; font-size: 18px; }
 .preview-header .muted { margin: 0; }
+
+/* Scoped to the preview table's own header row by ID rather than the
+   shared .header-row-preview-table class, so this drag styling never
+   bleeds onto the (non-draggable) Header Row Selection screen that reuses
+   the same table classes. */
+#previewTableHeadRow th.preview-th-draggable {
+  cursor: grab;
+  user-select: none;
+}
+#previewTableHeadRow th.preview-th-draggable:active { cursor: grabbing; }
+#previewTableHeadRow th.preview-th--dragging { opacity: 0.4; }
+#previewTableHeadRow th.preview-th--drag-over {
+  background: #dbe6ff;
+  box-shadow: inset 2px 0 0 var(--color-primary), inset -2px 0 0 var(--color-primary);
+}
