@@ -9,6 +9,7 @@
     categories: "sai_categories",
     columnStructure: "sai_column_structure",
     sheetPreference: "sai_sheet_preference",
+    headerRowPreference: "sai_header_row_preference",
     formulas: "sai_formulas"
   };
 
@@ -84,6 +85,24 @@
     var all = loadJSON(STORAGE_KEYS.sheetPreference, {});
     all[sheetPreferenceKey(category, reportType)] = sheetName;
     saveJSON(STORAGE_KEYS.sheetPreference, all);
+  }
+
+  // Which row holds the column headers is remembered per Category + Report
+  // Type (same key shape as the sheet preference above), so the header row
+  // screen comes up with the previously-used row already selected instead
+  // of always defaulting back to row 1.
+  function headerRowPreferenceKey(category, reportType) {
+    return category + "␟" + reportType;
+  }
+  function getHeaderRowPreference(category, reportType) {
+    var all = loadJSON(STORAGE_KEYS.headerRowPreference, {});
+    var key = headerRowPreferenceKey(category, reportType);
+    return Object.prototype.hasOwnProperty.call(all, key) ? all[key] : null;
+  }
+  function saveHeaderRowPreference(category, reportType, rowIndex) {
+    var all = loadJSON(STORAGE_KEYS.headerRowPreference, {});
+    all[headerRowPreferenceKey(category, reportType)] = rowIndex;
+    saveJSON(STORAGE_KEYS.headerRowPreference, all);
   }
 
   // Formulas (validation checks) built on the Formula Builder screen are
@@ -504,6 +523,13 @@
    * ------------------------------------------------------------------- */
   var sheetList = document.getElementById("sheetList");
 
+  // Looks up the saved header row for the current Category + Report Type
+  // and applies it to state, defaulting to row 1 (index 0) if none is saved.
+  function applyHeaderRowPreference() {
+    var saved = getHeaderRowPreference(state.selectedCategory, state.selectedReportType);
+    state.selectedHeaderRowIndex = saved !== null ? saved : 0;
+  }
+
   function proceedPastCategoryScreen() {
     var sheetNames = currentWorkbook ? currentWorkbook.SheetNames : [];
 
@@ -512,7 +538,7 @@
       if (saved && sheetNames.indexOf(saved) !== -1) {
         cameFromSheetScreen = false;
         state.selectedSheetName = saved;
-        state.selectedHeaderRowIndex = 0;
+        applyHeaderRowPreference();
         goToHeaderRowStep();
       } else {
         cameFromSheetScreen = true;
@@ -522,7 +548,7 @@
     } else {
       cameFromSheetScreen = false;
       state.selectedSheetName = sheetNames[0] || "";
-      state.selectedHeaderRowIndex = 0;
+      applyHeaderRowPreference();
       goToHeaderRowStep();
     }
   }
@@ -536,7 +562,7 @@
       tile.textContent = name;
       tile.addEventListener("click", function () {
         state.selectedSheetName = name;
-        state.selectedHeaderRowIndex = 0;
+        applyHeaderRowPreference();
         saveSheetPreference(state.selectedCategory, state.selectedReportType, name);
         goToHeaderRowStep();
       });
@@ -552,7 +578,9 @@
    * Screen: Header row selection
    *
    * Shows the first 20 rows of the selected sheet so the user can click
-   * whichever row actually holds the column names (not always row 1).
+   * whichever row actually holds the column names (not always row 1). The
+   * row chosen last time for this Category + Report Type is pre-selected
+   * (via applyHeaderRowPreference), so returning users usually just confirm.
    * ------------------------------------------------------------------- */
   var headerRowPreviewBody = document.getElementById("headerRowPreviewBody");
   var btnHeaderRowContinue = document.getElementById("btnHeaderRowContinue");
@@ -570,6 +598,13 @@
 
     var sheet = currentWorkbook.Sheets[state.selectedSheetName];
     var previewRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true }).slice(0, HEADER_ROW_PREVIEW_LIMIT);
+
+    // A saved header row preference may not fit this file (e.g. it points
+    // past the last previewed row), so fall back to row 1 rather than
+    // leaving no row selected.
+    if (state.selectedHeaderRowIndex < 0 || state.selectedHeaderRowIndex >= previewRows.length) {
+      state.selectedHeaderRowIndex = 0;
+    }
 
     var maxCols = 0;
     previewRows.forEach(function (row) { if (row.length > maxCols) maxCols = row.length; });
@@ -642,6 +677,7 @@
       var extracted = extractHeadersAndRows(sheet, state.selectedHeaderRowIndex);
       currentFileHeaders = extracted.headers;
       currentFileRows = extracted.rows;
+      saveHeaderRowPreference(state.selectedCategory, state.selectedReportType, state.selectedHeaderRowIndex);
       console.log(
         "[SAI] First 5 headers extracted from sheet \"" + state.selectedSheetName + "\" (header row " + (state.selectedHeaderRowIndex + 1) + "):",
         currentFileHeaders.slice(0, 5)
