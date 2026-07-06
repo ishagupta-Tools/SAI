@@ -6,11 +6,14 @@
    * ------------------------------------------------------------------- */
   var STORAGE_KEYS = {
     company: "sai_company_name",
-    categories: "sai_categories",
+    masterReports: "sai_master_reports",
+    reportTypes: "sai_report_types",
     columnStructure: "sai_column_structure",
     sheetPreference: "sai_sheet_preference",
     headerRowPreference: "sai_header_row_preference",
-    formulas: "sai_formulas"
+    formulas: "sai_formulas",
+    dateColumnPreference: "sai_date_column_preference",
+    masterReportData: "sai_master_report_data"
   };
 
   function loadJSON(key, fallback) {
@@ -28,97 +31,179 @@
   function getCompanyName() { return localStorage.getItem(STORAGE_KEYS.company) || ""; }
   function setCompanyName(name) { localStorage.setItem(STORAGE_KEYS.company, name); }
 
-  // Report Categories/Types: two-level template tree shown on the home
-  // screen and reused by the upload flow's category/type picker.
-  function getCategories() { return loadJSON(STORAGE_KEYS.categories, []); }
-  function saveCategories(categories) { saveJSON(STORAGE_KEYS.categories, categories); }
-  function addCategory(name) {
-    var categories = getCategories();
-    var exists = categories.some(function (c) { return c.name.toLowerCase() === name.toLowerCase(); });
-    if (!exists) {
-      categories.push({ name: name, reportTypes: [] });
-      saveCategories(categories);
-    }
-    return categories;
+  function formatDateForDisplay(isoStringOrNull) {
+    if (!isoStringOrNull) return "";
+    var d = new Date(isoStringOrNull);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
   }
-  function addReportTypeToCategory(categoryName, reportTypeName) {
-    var categories = getCategories();
-    var category = categories.find(function (c) { return c.name.toLowerCase() === categoryName.toLowerCase(); });
-    if (!category) return categories;
-    var exists = category.reportTypes.some(function (t) { return t.toLowerCase() === reportTypeName.toLowerCase(); });
-    if (!exists) {
-      category.reportTypes.push(reportTypeName);
-      saveCategories(categories);
+
+  // Master Reports: the top-level container shown on the home screen. Only
+  // written to once a Report Type's data is actually merged into it (see
+  // mergeReportTypeDataIntoMasterReport) — never at the naming-screen step —
+  // so a card only appears once a full upload flow has been completed.
+  function getMasterReports() { return loadJSON(STORAGE_KEYS.masterReports, []); }
+  function saveMasterReports(list) { saveJSON(STORAGE_KEYS.masterReports, list); }
+  function getMasterReport(name) {
+    return getMasterReports().find(function (m) { return m.name.toLowerCase() === name.toLowerCase(); }) || null;
+  }
+  function resolveExistingMasterReportName(typed) {
+    var match = getMasterReports().find(function (m) { return m.name.toLowerCase() === typed.toLowerCase(); });
+    return match ? match.name : typed;
+  }
+  function upsertMasterReportRegistry(masterReportName, reportTypeName, totalRows, lastUpdated) {
+    var list = getMasterReports();
+    var entry = list.find(function (m) { return m.name.toLowerCase() === masterReportName.toLowerCase(); });
+    if (!entry) {
+      entry = { name: masterReportName, reportTypesUsed: [], lastUpdated: lastUpdated, totalRows: totalRows };
+      list.push(entry);
     }
-    return categories;
+    if (entry.reportTypesUsed.indexOf(reportTypeName) === -1) entry.reportTypesUsed.push(reportTypeName);
+    entry.lastUpdated = lastUpdated;
+    entry.totalRows = totalRows;
+    saveMasterReports(list);
+  }
+
+  // Report Types are a flat, global, reusable list of source-file templates
+  // (e.g. "Amazon Orders") shared across every Master Report that uses them —
+  // their sheet/header-row/column/formula/date-column preferences below are
+  // all keyed by Report Type alone, not by which Master Report is active.
+  function getReportTypes() { return loadJSON(STORAGE_KEYS.reportTypes, []); }
+  function saveReportTypes(list) { saveJSON(STORAGE_KEYS.reportTypes, list); }
+  function addReportType(name) {
+    var list = getReportTypes();
+    var exists = list.some(function (t) { return t.toLowerCase() === name.toLowerCase(); });
+    if (!exists) { list.push(name); saveReportTypes(list); }
+    return list;
+  }
+  function resolveExistingReportTypeName(typed) {
+    var match = getReportTypes().find(function (t) { return t.toLowerCase() === typed.toLowerCase(); });
+    return match || typed;
   }
 
   // Column structure (which columns to keep + what to rename them to) is
-  // saved per Category + Report Type, keyed by the *original* column name.
-  // This is write-only for now (read by the Part C formula builder later) —
-  // the column selection screen itself must never read it back, since a
-  // value saved in one session must not resurface as if it belonged to a
-  // different, later-uploaded file.
-  function columnStructureKey(category, reportType) {
-    return category + "␟" + reportType;
-  }
-  function saveColumnStructureFor(category, reportType, headerStructure) {
+  // saved per Report Type, keyed by the *original* column name. Writing is
+  // the only thing the column selection screen itself may do with it — its
+  // checkboxes/rename inputs are always initialised fresh from the current
+  // file's own headers, never prefilled from here, since a value saved in
+  // one session must not resurface as if it belonged to a different,
+  // later-uploaded file. The read accessor below exists solely for the
+  // column-mismatch diff (comparing saved header *names* against the
+  // current file's), which is a different concern from prefilling defaults.
+  function saveColumnStructureFor(reportType, headerStructure) {
     var all = loadJSON(STORAGE_KEYS.columnStructure, {});
-    var key = columnStructureKey(category, reportType);
-    var existing = all[key] || {};
+    var existing = all[reportType] || {};
     Object.keys(headerStructure).forEach(function (h) { existing[h] = headerStructure[h]; });
-    all[key] = existing;
+    all[reportType] = existing;
     saveJSON(STORAGE_KEYS.columnStructure, all);
   }
+  function getColumnStructureFor(reportType) {
+    var all = loadJSON(STORAGE_KEYS.columnStructure, {});
+    return all[reportType] || null;
+  }
 
-  // Which sheet holds the data is remembered per Category + Report Type
-  // (same key shape as the column structure above), so a report type that's
-  // always in, say, "Sheet2" doesn't need to be picked again on every upload.
-  function sheetPreferenceKey(category, reportType) {
-    return category + "␟" + reportType;
-  }
-  function getSheetPreference(category, reportType) {
+  // Which sheet holds the data is remembered per Report Type, so a report
+  // type that's always in, say, "Sheet2" doesn't need to be picked again.
+  function getSheetPreference(reportType) {
     var all = loadJSON(STORAGE_KEYS.sheetPreference, {});
-    return all[sheetPreferenceKey(category, reportType)] || "";
+    return all[reportType] || "";
   }
-  function saveSheetPreference(category, reportType, sheetName) {
+  function saveSheetPreference(reportType, sheetName) {
     var all = loadJSON(STORAGE_KEYS.sheetPreference, {});
-    all[sheetPreferenceKey(category, reportType)] = sheetName;
+    all[reportType] = sheetName;
     saveJSON(STORAGE_KEYS.sheetPreference, all);
   }
 
-  // Which row holds the column headers is remembered per Category + Report
-  // Type (same key shape as the sheet preference above), so the header row
-  // screen comes up with the previously-used row already selected instead
-  // of always defaulting back to row 1.
-  function headerRowPreferenceKey(category, reportType) {
-    return category + "␟" + reportType;
-  }
-  function getHeaderRowPreference(category, reportType) {
+  // Which row holds the column headers is remembered per Report Type, so
+  // the header row screen comes up with the previously-used row already
+  // selected instead of always defaulting back to row 1.
+  function getHeaderRowPreference(reportType) {
     var all = loadJSON(STORAGE_KEYS.headerRowPreference, {});
-    var key = headerRowPreferenceKey(category, reportType);
-    return Object.prototype.hasOwnProperty.call(all, key) ? all[key] : null;
+    return Object.prototype.hasOwnProperty.call(all, reportType) ? all[reportType] : null;
   }
-  function saveHeaderRowPreference(category, reportType, rowIndex) {
+  function saveHeaderRowPreference(reportType, rowIndex) {
     var all = loadJSON(STORAGE_KEYS.headerRowPreference, {});
-    all[headerRowPreferenceKey(category, reportType)] = rowIndex;
+    all[reportType] = rowIndex;
     saveJSON(STORAGE_KEYS.headerRowPreference, all);
   }
 
   // Formulas (validation checks) built on the Formula Builder screen are
-  // saved per Category + Report Type (same key shape as above), so
-  // reopening a report type later pre-fills whatever was built for it.
-  function formulaKey(category, reportType) {
-    return category + "␟" + reportType;
-  }
-  function getFormulasFor(category, reportType) {
+  // saved per Report Type, so reopening a report type later pre-fills
+  // whatever was built for it.
+  function getFormulasFor(reportType) {
     var all = loadJSON(STORAGE_KEYS.formulas, {});
-    return all[formulaKey(category, reportType)] || [];
+    return all[reportType] || [];
   }
-  function saveFormulasFor(category, reportType, formulas) {
+  function saveFormulasFor(reportType, formulas) {
     var all = loadJSON(STORAGE_KEYS.formulas, {});
-    all[formulaKey(category, reportType)] = formulas;
+    all[reportType] = formulas;
     saveJSON(STORAGE_KEYS.formulas, all);
+  }
+
+  // Which original column is "the" date column for a Report Type (used to
+  // compute the exported "Period covered" range). Saved per Report Type;
+  // null/absent means this report type has no date column marked.
+  function getDateColumnPreference(reportType) {
+    var all = loadJSON(STORAGE_KEYS.dateColumnPreference, {});
+    return Object.prototype.hasOwnProperty.call(all, reportType) ? all[reportType] : null;
+  }
+  function saveDateColumnPreferenceFor(reportType, originalHeaderOrNull) {
+    var all = loadJSON(STORAGE_KEYS.dateColumnPreference, {});
+    all[reportType] = originalHeaderOrNull;
+    saveJSON(STORAGE_KEYS.dateColumnPreference, all);
+  }
+
+  // The actual accumulated dataset for a Master Report: a union of every
+  // column seen across all Report Types merged into it so far, one row per
+  // source row (blank-filled for columns that row's Report Type doesn't
+  // have), tagged with which Report Type it came from, plus a hidden
+  // __saiDate bookkeeping field (never rendered/exported) used only to
+  // compute "Period covered" at export time.
+  function getMasterReportData(masterReportName) {
+    var all = loadJSON(STORAGE_KEYS.masterReportData, {});
+    return all[masterReportName] || null;
+  }
+  function saveMasterReportData(masterReportName, data) {
+    var all = loadJSON(STORAGE_KEYS.masterReportData, {});
+    all[masterReportName] = data;
+    saveJSON(STORAGE_KEYS.masterReportData, all);
+  }
+
+  function parseDateSafe(value) {
+    if (value === "" || value === null || value === undefined) return null;
+    var d = new Date(value);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  function mergeReportTypeDataIntoMasterReport(masterReportName, reportTypeName, finalColumns, rows, fileMeta, dateColumnKey) {
+    var data = getMasterReportData(masterReportName) || { columns: ["Report Type"], rows: [], uploadedFiles: [], lastUpdated: null };
+
+    finalColumns.forEach(function (c) {
+      if (data.columns.indexOf(c) === -1) data.columns.push(c);
+    });
+
+    rows.forEach(function (row) {
+      var mergedRow = { "Report Type": reportTypeName };
+      data.columns.forEach(function (c) {
+        if (c === "Report Type") return;
+        mergedRow[c] = Object.prototype.hasOwnProperty.call(row, c) ? row[c] : "";
+      });
+      mergedRow.__saiDate = dateColumnKey ? parseDateSafe(row[dateColumnKey]) : null;
+      data.rows.push(mergedRow);
+    });
+
+    data.uploadedFiles.push({ name: fileMeta.name, size: fileMeta.size });
+    data.lastUpdated = new Date().toISOString();
+    saveMasterReportData(masterReportName, data);
+
+    upsertMasterReportRegistry(masterReportName, reportTypeName, data.rows.length, data.lastUpdated);
+  }
+
+  function isDuplicateFileUpload(masterReportName, fileName, fileSize) {
+    if (!masterReportName) return false;
+    var data = getMasterReportData(masterReportName);
+    if (!data || !data.uploadedFiles) return false;
+    return data.uploadedFiles.some(function (f) { return f.name === fileName && f.size === fileSize; });
   }
 
   /* ---------------------------------------------------------------------
@@ -127,11 +212,13 @@
   var state = {
     companyName: "",
     fileName: "",
-    selectedCategory: "",
+    fileSize: 0,
+    selectedMasterReport: "",
     selectedReportType: "",
     selectedSheetName: "",
     selectedHeaderRowIndex: 0,
-    selectedColumns: []
+    selectedColumns: [],
+    selectedDateColumnHeader: "" // renamed key of the marked date column, "" = none
   };
 
   /* ---------------------------------------------------------------------
@@ -162,6 +249,10 @@
    * just-uploaded file so the Sheet Selection and Header Row screens can
    * re-derive headers/rows for whichever sheet + row the user picks,
    * without re-reading the file from disk.
+   *
+   * currentRenamedRows holds the final, included+renamed row data (built
+   * once column selection is confirmed) — this is what formulas compute
+   * against and what actually gets merged into the Master Report.
    * ------------------------------------------------------------------- */
   var fileInput = document.getElementById("fileInput");
   var dropzone = document.getElementById("dropzone");
@@ -172,6 +263,7 @@
   var currentWorkbook = null;
   var currentFileHeaders = [];
   var currentFileRows = [];
+  var currentRenamedRows = [];
   var cameFromSheetScreen = false;
 
   dropzone.addEventListener("click", function () { fileInput.click(); });
@@ -220,6 +312,7 @@
 
         currentWorkbook = workbook;
         state.fileName = file.name;
+        state.fileSize = file.size;
         dropzoneFilename.textContent = file.name;
         console.log("[SAI] Workbook \"" + file.name + "\" parsed with " + workbook.SheetNames.length + " sheet(s):", workbook.SheetNames);
 
@@ -266,6 +359,20 @@
     return { headers: headers, rows: dataRows };
   }
 
+  // Applies each included column's include/rename choice, producing rows
+  // keyed by the FINAL renamed column names — this is what formulas and the
+  // Master Report merge operate on, not the raw original-header rows.
+  function buildRenamedRows(rawRows, structure) {
+    return rawRows.map(function (row) {
+      var out = {};
+      Object.keys(structure).forEach(function (origHeader) {
+        var col = structure[origHeader];
+        if (col.include) out[col.renameTo] = row[origHeader];
+      });
+      return out;
+    });
+  }
+
   /* ---------------------------------------------------------------------
    * Screen: Landing
    * ------------------------------------------------------------------- */
@@ -301,12 +408,15 @@
 
   function resetFileState() {
     state.fileName = "";
+    state.fileSize = 0;
     state.selectedSheetName = "";
     state.selectedHeaderRowIndex = 0;
     state.selectedColumns = [];
+    state.selectedDateColumnHeader = "";
     currentWorkbook = null;
     currentFileHeaders = [];
     currentFileRows = [];
+    currentRenamedRows = [];
     cameFromSheetScreen = false;
     btnUploadContinue.disabled = true;
     dropzoneFilename.textContent = "";
@@ -316,225 +426,202 @@
 
   document.getElementById("btnStartOver").addEventListener("click", function () {
     resetFileState();
-    state.selectedCategory = "";
+    state.selectedMasterReport = "";
     state.selectedReportType = "";
     renderHomeScreen();
     showScreen("screen-home");
   });
 
   /* ---------------------------------------------------------------------
-   * Screen: Home (report templates)
+   * Screen: Home (Master Reports)
    * ------------------------------------------------------------------- */
-  var newCategoryForm = document.getElementById("newCategoryForm");
-  var inputNewCategory = document.getElementById("inputNewCategory");
-
   document.getElementById("btnHomeNewUpload").addEventListener("click", function () {
     resetFileState();
-    showScreen("screen-upload");
-  });
-
-  document.getElementById("btnNewCategory").addEventListener("click", function () {
-    inputNewCategory.value = "";
-    newCategoryForm.hidden = false;
-    inputNewCategory.focus();
-  });
-
-  document.getElementById("btnCancelCategory").addEventListener("click", function () {
-    newCategoryForm.hidden = true;
-  });
-
-  document.getElementById("btnSaveCategory").addEventListener("click", function () {
-    var name = inputNewCategory.value.trim();
-    if (!name) {
-      inputNewCategory.focus();
-      return;
-    }
-    addCategory(name);
-    newCategoryForm.hidden = true;
-    renderHomeScreen();
+    state.selectedMasterReport = "";
+    state.selectedReportType = "";
+    renderMasterReportScreen(false);
+    showScreen("screen-master-report");
   });
 
   function renderHomeScreen() {
-    var categories = getCategories();
+    var masterReports = getMasterReports();
     var emptyState = document.getElementById("templatesEmptyState");
-    var list = document.getElementById("categoryList");
+    var list = document.getElementById("masterReportList");
     list.innerHTML = "";
 
-    emptyState.hidden = categories.length > 0;
-    list.hidden = categories.length === 0;
+    emptyState.hidden = masterReports.length > 0;
+    list.hidden = masterReports.length === 0;
 
-    categories.forEach(function (category) {
+    masterReports.forEach(function (mr) {
+      var data = getMasterReportData(mr.name);
+      var rowCount = data ? data.rows.length : 0;
+      var updatedText = formatDateForDisplay(mr.lastUpdated);
+
       var card = document.createElement("div");
-      card.className = "category-card";
+      card.className = "master-report-card";
 
       var header = document.createElement("div");
-      header.className = "category-card__header";
+      header.className = "master-report-card__header";
       var title = document.createElement("h3");
-      title.textContent = category.name;
+      title.textContent = mr.name;
       header.appendChild(title);
       card.appendChild(header);
 
-      if (category.reportTypes.length) {
+      var meta = document.createElement("p");
+      meta.className = "master-report-card__meta";
+      meta.textContent = rowCount + " row" + (rowCount === 1 ? "" : "s") + (updatedText ? " · Updated " + updatedText : "");
+      card.appendChild(meta);
+
+      if (mr.reportTypesUsed.length) {
         var tiles = document.createElement("div");
-        tiles.className = "category-card__tiles";
-        category.reportTypes.forEach(function (typeName) {
+        tiles.className = "master-report-card__tiles";
+        mr.reportTypesUsed.forEach(function (typeName) {
           var tile = document.createElement("button");
           tile.type = "button";
           tile.className = "report-tile";
           tile.textContent = typeName;
           tile.addEventListener("click", function () {
-            alert("Template selected: " + typeName);
+            resetFileState();
+            state.selectedMasterReport = mr.name;
+            state.selectedReportType = typeName;
+            showScreen("screen-upload");
           });
           tiles.appendChild(tile);
         });
         card.appendChild(tiles);
       } else {
         var emptyMsg = document.createElement("p");
-        emptyMsg.className = "category-card__empty";
-        emptyMsg.textContent = "No report types yet in this category.";
+        emptyMsg.className = "master-report-card__empty";
+        emptyMsg.textContent = "No report types yet in this Master Report.";
         card.appendChild(emptyMsg);
       }
 
-      var addForm = document.createElement("div");
-      addForm.className = "inline-form";
-      addForm.hidden = true;
-      var addInput = document.createElement("input");
-      addInput.type = "text";
-      addInput.placeholder = "e.g. Amazon Orders";
-      var addSaveBtn = document.createElement("button");
-      addSaveBtn.type = "button";
-      addSaveBtn.className = "btn btn--primary";
-      addSaveBtn.textContent = "Add";
-      var addCancelBtn = document.createElement("button");
-      addCancelBtn.type = "button";
-      addCancelBtn.className = "btn";
-      addCancelBtn.textContent = "Cancel";
-      addForm.appendChild(addInput);
-      addForm.appendChild(addSaveBtn);
-      addForm.appendChild(addCancelBtn);
-      card.appendChild(addForm);
-
-      var addToggleBtn = document.createElement("button");
-      addToggleBtn.type = "button";
-      addToggleBtn.className = "btn";
-      addToggleBtn.textContent = "+ Add Report Type";
-      addToggleBtn.addEventListener("click", function () {
-        addInput.value = "";
-        addForm.hidden = false;
-        addInput.focus();
+      var addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "btn";
+      addBtn.textContent = "+ Add Report Type";
+      addBtn.addEventListener("click", function () {
+        resetFileState();
+        state.selectedMasterReport = mr.name;
+        state.selectedReportType = "";
+        renderMasterReportScreen(true);
+        showScreen("screen-master-report");
       });
-      card.appendChild(addToggleBtn);
-
-      addCancelBtn.addEventListener("click", function () { addForm.hidden = true; });
-      addSaveBtn.addEventListener("click", function () {
-        var typeName = addInput.value.trim();
-        if (!typeName) {
-          addInput.focus();
-          return;
-        }
-        addReportTypeToCategory(category.name, typeName);
-        renderHomeScreen();
-      });
+      card.appendChild(addBtn);
 
       list.appendChild(card);
     });
   }
 
   /* ---------------------------------------------------------------------
-   * Screen: Upload -> Category / Report type
+   * Screen: Upload
    * ------------------------------------------------------------------- */
   document.getElementById("btnUploadBack").addEventListener("click", function () {
+    renderMasterReportScreen(!!state.selectedMasterReport);
+    showScreen("screen-master-report");
+  });
+
+  btnUploadContinue.addEventListener("click", function () {
+    if (isDuplicateFileUpload(state.selectedMasterReport, state.fileName, state.fileSize)) {
+      var proceedAnyway = window.confirm("This file looks like it was already uploaded (same name & size). Add it again?");
+      if (!proceedAnyway) return;
+    }
+    proceedPastUploadScreen();
+  });
+
+  /* ---------------------------------------------------------------------
+   * Screen: Master Report / Report Type
+   *
+   * Two modes: "free" (both fields editable — only reachable from the
+   * top-level "+ New Upload" button) and "locked" (Master Report is
+   * already known — from a card's "+ Add Report Type" or the Preview
+   * screen's "Add Another Report Type" — so only Report Type is editable).
+   * ------------------------------------------------------------------- */
+  var masterReportLockedWrap = document.getElementById("masterReportLockedWrap");
+  var masterReportInputWrap = document.getElementById("masterReportInputWrap");
+  var masterReportLockedName = document.getElementById("masterReportLockedName");
+  var inputMasterReport = document.getElementById("inputMasterReport");
+  var inputReportType = document.getElementById("inputReportType");
+  var btnMasterReportContinue = document.getElementById("btnMasterReportContinue");
+
+  function renderMasterReportScreen(locked) {
+    var masterReportDatalist = document.getElementById("masterReportDatalist");
+    masterReportDatalist.innerHTML = "";
+    getMasterReports().forEach(function (m) {
+      var opt = document.createElement("option");
+      opt.value = m.name;
+      masterReportDatalist.appendChild(opt);
+    });
+
+    var reportTypeDatalist = document.getElementById("reportTypeDatalist");
+    reportTypeDatalist.innerHTML = "";
+    getReportTypes().forEach(function (t) {
+      var opt = document.createElement("option");
+      opt.value = t;
+      reportTypeDatalist.appendChild(opt);
+    });
+
+    masterReportLockedWrap.hidden = !locked;
+    masterReportInputWrap.hidden = locked;
+    if (locked) {
+      masterReportLockedName.textContent = state.selectedMasterReport;
+    } else {
+      inputMasterReport.value = state.selectedMasterReport || "";
+    }
+    inputReportType.value = state.selectedReportType || "";
+    updateMasterReportContinueState();
+  }
+
+  function updateMasterReportContinueState() {
+    var masterReportOk = masterReportLockedWrap.hidden ? !!inputMasterReport.value.trim() : !!state.selectedMasterReport;
+    btnMasterReportContinue.disabled = !masterReportOk || !inputReportType.value.trim();
+  }
+
+  inputMasterReport.addEventListener("input", updateMasterReportContinueState);
+  inputReportType.addEventListener("input", updateMasterReportContinueState);
+
+  document.getElementById("btnMasterReportChange").addEventListener("click", function () {
+    state.selectedMasterReport = "";
+    renderMasterReportScreen(false);
+  });
+
+  document.getElementById("btnMasterReportBack").addEventListener("click", function () {
     renderHomeScreen();
     showScreen("screen-home");
   });
 
-  btnUploadContinue.addEventListener("click", function () {
-    renderCategoryScreen();
-    showScreen("screen-category");
-  });
-
-  /* ---------------------------------------------------------------------
-   * Screen: Report Category / Type
-   * ------------------------------------------------------------------- */
-  var inputCategory = document.getElementById("inputCategory");
-  var inputCatReportType = document.getElementById("inputCatReportType");
-  var btnCategoryContinue = document.getElementById("btnCategoryContinue");
-
-  function renderCategoryScreen() {
-    var categoryDatalist = document.getElementById("categoryDatalist");
-    categoryDatalist.innerHTML = "";
-    getCategories().forEach(function (c) {
-      var opt = document.createElement("option");
-      opt.value = c.name;
-      categoryDatalist.appendChild(opt);
-    });
-    inputCategory.value = state.selectedCategory || "";
-    inputCatReportType.value = state.selectedReportType || "";
-    updateCatReportTypeDatalist();
-    updateCategoryContinueState();
-  }
-
-  function updateCatReportTypeDatalist() {
-    var catName = inputCategory.value.trim();
-    var list = document.getElementById("catReportTypeDatalist");
-    list.innerHTML = "";
-    var match = getCategories().find(function (c) { return c.name.toLowerCase() === catName.toLowerCase(); });
-    if (match) {
-      match.reportTypes.forEach(function (t) {
-        var opt = document.createElement("option");
-        opt.value = t;
-        list.appendChild(opt);
-      });
-    }
-  }
-
-  function updateCategoryContinueState() {
-    btnCategoryContinue.disabled = !inputCategory.value.trim() || !inputCatReportType.value.trim();
-  }
-
-  inputCategory.addEventListener("input", function () {
-    updateCatReportTypeDatalist();
-    updateCategoryContinueState();
-  });
-  inputCatReportType.addEventListener("input", updateCategoryContinueState);
-
-  document.getElementById("btnCategoryBack").addEventListener("click", function () {
+  btnMasterReportContinue.addEventListener("click", function () {
+    var masterReportName = masterReportLockedWrap.hidden ? inputMasterReport.value.trim() : state.selectedMasterReport;
+    var reportTypeName = inputReportType.value.trim();
+    if (!masterReportName || !reportTypeName) return;
+    state.selectedMasterReport = resolveExistingMasterReportName(masterReportName);
+    state.selectedReportType = resolveExistingReportTypeName(reportTypeName);
+    addReportType(state.selectedReportType);
     showScreen("screen-upload");
-  });
-
-  btnCategoryContinue.addEventListener("click", function () {
-    var cat = inputCategory.value.trim();
-    var type = inputCatReportType.value.trim();
-    if (!cat || !type) return;
-    addCategory(cat);
-    addReportTypeToCategory(cat, type);
-    state.selectedCategory = cat;
-    state.selectedReportType = type;
-    proceedPastCategoryScreen();
   });
 
   /* ---------------------------------------------------------------------
    * Screen: Sheet selection
    *
    * Only shown when the uploaded file has more than one sheet. If a sheet
-   * name was already saved for this Category + Report Type combo (and
-   * that sheet still exists in this file), it's used automatically and
-   * this screen is skipped entirely.
+   * name was already saved for this Report Type (and that sheet still
+   * exists in this file), it's used automatically and this screen is
+   * skipped entirely.
    * ------------------------------------------------------------------- */
   var sheetList = document.getElementById("sheetList");
 
-  // Looks up the saved header row for the current Category + Report Type
-  // and applies it to state, defaulting to row 1 (index 0) if none is saved.
+  // Looks up the saved header row for the current Report Type and applies
+  // it to state, defaulting to row 1 (index 0) if none is saved.
   function applyHeaderRowPreference() {
-    var saved = getHeaderRowPreference(state.selectedCategory, state.selectedReportType);
+    var saved = getHeaderRowPreference(state.selectedReportType);
     state.selectedHeaderRowIndex = saved !== null ? saved : 0;
   }
 
-  function proceedPastCategoryScreen() {
+  function proceedPastUploadScreen() {
     var sheetNames = currentWorkbook ? currentWorkbook.SheetNames : [];
 
     if (sheetNames.length > 1) {
-      var saved = getSheetPreference(state.selectedCategory, state.selectedReportType);
+      var saved = getSheetPreference(state.selectedReportType);
       if (saved && sheetNames.indexOf(saved) !== -1) {
         cameFromSheetScreen = false;
         state.selectedSheetName = saved;
@@ -563,7 +650,7 @@
       tile.addEventListener("click", function () {
         state.selectedSheetName = name;
         applyHeaderRowPreference();
-        saveSheetPreference(state.selectedCategory, state.selectedReportType, name);
+        saveSheetPreference(state.selectedReportType, name);
         goToHeaderRowStep();
       });
       sheetList.appendChild(tile);
@@ -571,7 +658,7 @@
   }
 
   document.getElementById("btnSheetBack").addEventListener("click", function () {
-    showScreen("screen-category");
+    showScreen("screen-upload");
   });
 
   /* ---------------------------------------------------------------------
@@ -579,8 +666,8 @@
    *
    * Shows the first 20 rows of the selected sheet so the user can click
    * whichever row actually holds the column names (not always row 1). The
-   * row chosen last time for this Category + Report Type is pre-selected
-   * (via applyHeaderRowPreference), so returning users usually just confirm.
+   * row chosen last time for this Report Type is pre-selected (via
+   * applyHeaderRowPreference), so returning users usually just confirm.
    * ------------------------------------------------------------------- */
   var headerRowPreviewBody = document.getElementById("headerRowPreviewBody");
   var btnHeaderRowContinue = document.getElementById("btnHeaderRowContinue");
@@ -667,7 +754,7 @@
       renderSheetScreen();
       showScreen("screen-sheet");
     } else {
-      showScreen("screen-category");
+      showScreen("screen-upload");
     }
   });
 
@@ -677,7 +764,7 @@
       var extracted = extractHeadersAndRows(sheet, state.selectedHeaderRowIndex);
       currentFileHeaders = extracted.headers;
       currentFileRows = extracted.rows;
-      saveHeaderRowPreference(state.selectedCategory, state.selectedReportType, state.selectedHeaderRowIndex);
+      saveHeaderRowPreference(state.selectedReportType, state.selectedHeaderRowIndex);
       console.log(
         "[SAI] First 5 headers extracted from sheet \"" + state.selectedSheetName + "\" (header row " + (state.selectedHeaderRowIndex + 1) + "):",
         currentFileHeaders.slice(0, 5)
@@ -693,20 +780,42 @@
    * Screen: Column selection & rename
    * ------------------------------------------------------------------- */
   var columnsTableBody = document.getElementById("columnsTableBody");
+  var columnsMismatchBanner = document.getElementById("columnsMismatchBanner");
+  var columnsMismatchText = document.getElementById("columnsMismatchText");
 
   function renderColumnScreen() {
     document.getElementById("columnsReportType").textContent = state.selectedReportType;
     document.getElementById("columnsAutofillNote").hidden = true;
+    columnsMismatchBanner.hidden = true;
 
     console.log("[SAI] Rendering column screen from currentFileHeaders:", currentFileHeaders);
+
+    // Column-mismatch check: this only reads the saved header *keys* to
+    // diff against the current file, purely informational — it never
+    // feeds the per-row defaults built below.
+    var savedStructure = getColumnStructureFor(state.selectedReportType);
+    if (savedStructure) {
+      var savedKeys = Object.keys(savedStructure);
+      var missing = savedKeys.filter(function (h) { return currentFileHeaders.indexOf(h) === -1; });
+      var added = currentFileHeaders.filter(function (h) { return savedKeys.indexOf(h) === -1; });
+      if (missing.length || added.length) {
+        var parts = [];
+        if (missing.length) parts.push("missing: " + missing.join(", "));
+        if (added.length) parts.push("new: " + added.join(", "));
+        columnsMismatchText.textContent = "Column mismatch detected — " + parts.join("; ") + ". Update template or remap manually?";
+        columnsMismatchBanner.hidden = false;
+      }
+    }
+
+    var savedDateHeader = getDateColumnPreference(state.selectedReportType);
 
     columnsTableBody.innerHTML = "";
     // This screen must show exactly the file's own headers and nothing else.
     // Every row is built solely from currentFileHeaders (set by
     // extractHeadersAndRows() once the sheet + header row are chosen) with
     // include=true and renameTo=header as the only defaults — localStorage
-    // is never read here, so a value saved in a previous session can never
-    // resurface as if it came from the current file.
+    // is never read here for prefilling, so a value saved in a previous
+    // session can never resurface as if it came from the current file.
     currentFileHeaders.forEach(function (header) {
       var include = true;
       var renameTo = header;
@@ -735,6 +844,16 @@
       tdRename.appendChild(renameInput);
       tr.appendChild(tdRename);
 
+      var tdDate = document.createElement("td");
+      tdDate.className = "col-check-cell";
+      var dateRadio = document.createElement("input");
+      dateRadio.type = "radio";
+      dateRadio.name = "dateColumnChoice";
+      dateRadio.className = "column-date-radio";
+      dateRadio.checked = header === savedDateHeader;
+      tdDate.appendChild(dateRadio);
+      tr.appendChild(tdDate);
+
       columnsTableBody.appendChild(tr);
     });
   }
@@ -745,6 +864,15 @@
   document.getElementById("btnColumnsDeselectAll").addEventListener("click", function () {
     columnsTableBody.querySelectorAll(".column-include").forEach(function (cb) { cb.checked = false; });
   });
+  document.getElementById("btnColumnsClearDate").addEventListener("click", function () {
+    columnsTableBody.querySelectorAll(".column-date-radio").forEach(function (r) { r.checked = false; });
+  });
+  document.getElementById("btnColumnsMismatchUpdate").addEventListener("click", function () {
+    columnsMismatchBanner.hidden = true;
+  });
+  document.getElementById("btnColumnsMismatchRemap").addEventListener("click", function () {
+    columnsMismatchBanner.hidden = true;
+  });
 
   document.getElementById("btnColumnsBack").addEventListener("click", function () {
     showScreen("screen-upload");
@@ -753,19 +881,31 @@
   document.getElementById("btnColumnsNext").addEventListener("click", function () {
     var structure = {};
     var selectedColumns = [];
+    var dateHeaderOriginal = "";
     columnsTableBody.querySelectorAll("tr").forEach(function (tr) {
       var header = tr.dataset.header;
       var checkbox = tr.querySelector(".column-include");
       var renameInput = tr.querySelector(".column-rename");
+      var dateRadio = tr.querySelector(".column-date-radio");
       var renameTo = renameInput.value.trim() || header;
       structure[header] = {
         include: checkbox.checked,
         renameTo: renameTo
       };
       if (checkbox.checked) selectedColumns.push(renameTo);
+      if (dateRadio.checked) dateHeaderOriginal = header;
     });
-    saveColumnStructureFor(state.selectedCategory, state.selectedReportType, structure);
+    saveColumnStructureFor(state.selectedReportType, structure);
+    saveDateColumnPreferenceFor(state.selectedReportType, dateHeaderOriginal || null);
+
     state.selectedColumns = selectedColumns;
+    // Store the renamed key (not the original header) so the merge step
+    // can look the date value up directly on the final row objects.
+    state.selectedDateColumnHeader = (dateHeaderOriginal && structure[dateHeaderOriginal].include)
+      ? structure[dateHeaderOriginal].renameTo
+      : "";
+    currentRenamedRows = buildRenamedRows(currentFileRows, structure);
+
     goToFormulaStep();
   });
 
@@ -781,7 +921,7 @@
    * ------------------------------------------------------------------- */
   var formulaList = document.getElementById("formulaList");
   var formulaEmptyState = document.getElementById("formulaEmptyState");
-  var formulaSuccessMsg = document.getElementById("formulaSuccessMsg");
+  var formulaErrorMsg = document.getElementById("formulaErrorMsg");
   var btnFormulaNext = document.getElementById("btnFormulaNext");
 
   function goToFormulaStep() {
@@ -951,9 +1091,9 @@
 
   function renderFormulaScreen() {
     formulaList.innerHTML = "";
-    formulaSuccessMsg.hidden = true;
+    formulaErrorMsg.hidden = true;
 
-    var saved = getFormulasFor(state.selectedCategory, state.selectedReportType);
+    var saved = getFormulasFor(state.selectedReportType);
     saved.forEach(function (f) { addFormulaRow(f); });
 
     updateFormulaEmptyState();
@@ -981,6 +1121,31 @@
     return formulas;
   }
 
+  function collectFormulaReferencedColumns(formula) {
+    var cols = [formula.firstColumn];
+    formula.steps.forEach(function (s) {
+      if (s.operandType === "column" && s.operandColumn) cols.push(s.operandColumn);
+    });
+    return cols.filter(function (c) { return !!c; });
+  }
+
+  function computeFormulaValue(row, formula) {
+    var value = parseFloat(row[formula.firstColumn]);
+    if (isNaN(value)) value = 0;
+    for (var i = 0; i < formula.steps.length; i++) {
+      var step = formula.steps[i];
+      var operand = step.operandType === "number" ? parseFloat(step.operandNumber) : parseFloat(row[step.operandColumn]);
+      if (isNaN(operand)) operand = 0;
+      switch (step.operator) {
+        case "+": value += operand; break;
+        case "-": value -= operand; break;
+        case "*": value *= operand; break;
+        case "/": value = operand === 0 ? NaN : value / operand; break;
+      }
+    }
+    return isNaN(value) || !isFinite(value) ? "" : value;
+  }
+
   document.getElementById("btnAddFormula").addEventListener("click", function () {
     addFormulaRow(null);
   });
@@ -991,9 +1156,164 @@
 
   btnFormulaNext.addEventListener("click", function () {
     var formulas = readFormulasFromDOM();
-    saveFormulasFor(state.selectedCategory, state.selectedReportType, formulas);
-    formulaSuccessMsg.textContent = "Formulas saved for \"" + state.selectedReportType + "\".";
-    formulaSuccessMsg.hidden = false;
+    saveFormulasFor(state.selectedReportType, formulas);
+    formulaErrorMsg.hidden = true;
+
+    for (var i = 0; i < formulas.length; i++) {
+      var referenced = collectFormulaReferencedColumns(formulas[i]);
+      var missingCol = referenced.find(function (c) { return state.selectedColumns.indexOf(c) === -1; });
+      if (missingCol) {
+        formulaErrorMsg.textContent = "Required column \"" + missingCol + "\" (used in formula \"" + (formulas[i].name || "Untitled") + "\") is missing from this file. Include it on the previous screen or adjust the formula.";
+        formulaErrorMsg.hidden = false;
+        return;
+      }
+    }
+
+    currentRenamedRows.forEach(function (row) {
+      formulas.forEach(function (f) {
+        if (f.name) row[f.name] = computeFormulaValue(row, f);
+      });
+    });
+
+    var formulaColumnNames = formulas.filter(function (f) { return f.name; }).map(function (f) { return f.name; });
+
+    mergeReportTypeDataIntoMasterReport(
+      state.selectedMasterReport,
+      state.selectedReportType,
+      state.selectedColumns.concat(formulaColumnNames),
+      currentRenamedRows,
+      { name: state.fileName, size: state.fileSize },
+      state.selectedDateColumnHeader
+    );
+
+    goToPreviewStep();
+  });
+
+  /* ---------------------------------------------------------------------
+   * Screen: Preview & export
+   * ------------------------------------------------------------------- */
+  var PREVIEW_ROW_LIMIT = 10;
+
+  function goToPreviewStep() {
+    renderPreviewScreen();
+    showScreen("screen-preview");
+  }
+
+  function renderPreviewScreen() {
+    var data = getMasterReportData(state.selectedMasterReport);
+    var mr = getMasterReport(state.selectedMasterReport);
+    var exportColumns = data ? data.columns : [];
+
+    document.getElementById("previewMasterReportName").textContent = state.selectedMasterReport;
+    document.getElementById("previewMeta").textContent =
+      (data ? data.rows.length : 0) + " total rows · Updated " + formatDateForDisplay(data ? data.lastUpdated : null);
+
+    var chips = document.getElementById("previewReportTypeChips");
+    chips.innerHTML = "";
+    (mr ? mr.reportTypesUsed : []).forEach(function (t) {
+      var chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = t;
+      chips.appendChild(chip);
+    });
+
+    document.getElementById("previewExportMsg").hidden = true;
+
+    var headRow = document.getElementById("previewTableHeadRow");
+    headRow.innerHTML = "";
+    var thSno = document.createElement("th");
+    thSno.textContent = "S.No.";
+    headRow.appendChild(thSno);
+    exportColumns.forEach(function (c) {
+      var th = document.createElement("th");
+      th.textContent = c;
+      headRow.appendChild(th);
+    });
+
+    var body = document.getElementById("previewTableBody");
+    body.innerHTML = "";
+    var previewRows = data ? data.rows.slice(0, PREVIEW_ROW_LIMIT) : [];
+    previewRows.forEach(function (row, idx) {
+      var tr = document.createElement("tr");
+      var tdSno = document.createElement("td");
+      tdSno.textContent = String(idx + 1);
+      tr.appendChild(tdSno);
+      exportColumns.forEach(function (c) {
+        var td = document.createElement("td");
+        var v = row[c];
+        td.textContent = v === undefined || v === null ? "" : v;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  document.getElementById("btnPreviewHome").addEventListener("click", function () {
+    resetFileState();
+    state.selectedMasterReport = "";
+    state.selectedReportType = "";
+    renderHomeScreen();
+    showScreen("screen-home");
+  });
+
+  document.getElementById("btnPreviewAddReportType").addEventListener("click", function () {
+    var keepMasterReport = state.selectedMasterReport;
+    resetFileState();
+    state.selectedMasterReport = keepMasterReport;
+    state.selectedReportType = "";
+    renderMasterReportScreen(true);
+    showScreen("screen-master-report");
+  });
+
+  function computePeriodCoveredText(rows) {
+    var dates = rows
+      .map(function (r) { return r.__saiDate; })
+      .filter(function (d) { return !!d; })
+      .map(function (d) { return new Date(d); });
+    if (!dates.length) return "N/A";
+    var min = new Date(Math.min.apply(null, dates));
+    var max = new Date(Math.max.apply(null, dates));
+    var fmt = function (d) { return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }); };
+    return fmt(min) + " to " + fmt(max);
+  }
+
+  function generateMasterReportExport() {
+    var data = getMasterReportData(state.selectedMasterReport);
+    if (!data || !data.rows.length) {
+      alert("No data to export yet.");
+      return;
+    }
+
+    var exportColumns = data.columns; // __saiDate is bookkeeping-only, never exported
+    var todayText = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+
+    var aoa = [];
+    aoa.push([state.companyName || ""]);
+    aoa.push([state.selectedMasterReport]);
+    aoa.push(["Date generated: " + todayText]);
+    aoa.push(["Period covered: " + computePeriodCoveredText(data.rows)]);
+    aoa.push([]);
+    aoa.push(["S.No."].concat(exportColumns));
+    data.rows.forEach(function (row, idx) {
+      aoa.push([idx + 1].concat(exportColumns.map(function (c) {
+        var v = row[c];
+        return v === undefined || v === null ? "" : v;
+      })));
+    });
+
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Master Report");
+    var safeName = state.selectedMasterReport.replace(/[\\/:*?"<>|]/g, "_");
+    XLSX.writeFile(wb, safeName + ".xlsx");
+
+    var msg = document.getElementById("previewExportMsg");
+    msg.textContent = "Downloaded \"" + safeName + ".xlsx\".";
+    msg.hidden = false;
+  }
+
+  document.getElementById("btnPreviewGenerate").addEventListener("click", function () {
+    generateMasterReportExport();
   });
 
   /* ---------------------------------------------------------------------
