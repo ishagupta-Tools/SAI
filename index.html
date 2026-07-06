@@ -51,9 +51,17 @@
         <button class="btn btn--primary btn--lg" id="btnHomeNewUpload" type="button">+ New Upload</button>
       </div>
 
+      <div class="home-templates" id="progressSection" hidden>
+        <div class="home-templates__header">
+          <h2>Reports in Progress</h2>
+        </div>
+
+        <div class="master-report-list" id="progressReportList"></div>
+      </div>
+
       <div class="home-templates">
         <div class="home-templates__header">
-          <h2>Your Master Reports</h2>
+          <h2>Your Templates</h2>
         </div>
 
         <p class="empty-state" id="templatesEmptyState" hidden>No Master Reports yet — click New Upload to create your first one.</p>
@@ -184,6 +192,12 @@
         </table>
       </div>
 
+      <div class="missing-columns-wrap" id="missingColumnsWrap" hidden>
+        <h3>Columns not in this file</h3>
+        <p class="muted" id="missingColumnsHint"></p>
+        <div class="missing-columns-list" id="missingColumnsList"></div>
+      </div>
+
       <div class="actions">
         <button class="btn" id="btnColumnsBack" type="button">Back</button>
         <button class="btn btn--primary" id="btnColumnsNext" type="button">Next</button>
@@ -196,6 +210,8 @@
     <div class="card card--wide">
       <h2>Add Validation Checks</h2>
       <p class="muted">Each formula becomes a new calculated column added to every row.</p>
+
+      <p class="hint">💡 Formulas run top to bottom. If a formula uses a column created by another formula, make sure it appears below it. Drag to reorder.</p>
 
       <div class="formula-toolbar">
         <button class="btn" id="btnAddFormula" type="button">+ Add Formula</button>
@@ -247,6 +263,17 @@
   </section>
 
 </main>
+
+<!-- START OVER CONFIRMATION -->
+<div class="modal-overlay" id="startOverModal" hidden>
+  <div class="modal">
+    <p>This will permanently delete all data, templates and reports in progress. This cannot be undone. Are you sure?</p>
+    <div class="modal__actions">
+      <button class="btn" id="btnStartOverCancel" type="button">Cancel</button>
+      <button class="btn btn--danger" id="btnStartOverConfirm" type="button">Yes, delete everything</button>
+    </div>
+  </div>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="app.js"></script>
