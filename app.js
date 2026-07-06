@@ -13,7 +13,9 @@
     headerRowPreference: "sai_header_row_preference",
     formulas: "sai_formulas",
     dateColumnPreference: "sai_date_column_preference",
-    masterReportData: "sai_master_report_data"
+    masterReportData: "sai_master_report_data",
+    setupProgress: "sai_setup_progress",
+    columnOrder: "sai_column_order"
   };
 
   function loadJSON(key, fallback) {
@@ -169,6 +171,29 @@
     saveJSON(STORAGE_KEYS.masterReportData, all);
   }
 
+  // The user's drag-to-reorder column order on the Preview screen, saved
+  // per Master Report so it's remembered on export and on returning to the
+  // preview later. This is purely a display/export ordering preference —
+  // it never touches data.columns itself (that array's append order still
+  // drives internal logic like column-mismatch dedup), so a column added by
+  // a later Report Type upload just lands at the end until reordered again.
+  function getColumnOrderFor(masterReportName) {
+    var all = loadJSON(STORAGE_KEYS.columnOrder, {});
+    return all[masterReportName] || null;
+  }
+  function saveColumnOrderFor(masterReportName, order) {
+    var all = loadJSON(STORAGE_KEYS.columnOrder, {});
+    all[masterReportName] = order;
+    saveJSON(STORAGE_KEYS.columnOrder, all);
+  }
+  function getEffectiveExportColumns(masterReportName, dataColumns) {
+    var saved = getColumnOrderFor(masterReportName);
+    if (!saved) return dataColumns.slice();
+    var ordered = saved.filter(function (c) { return dataColumns.indexOf(c) !== -1; });
+    dataColumns.forEach(function (c) { if (ordered.indexOf(c) === -1) ordered.push(c); });
+    return ordered;
+  }
+
   function parseDateSafe(value) {
     if (value === "" || value === null || value === undefined) return null;
     var d = new Date(value);
@@ -204,6 +229,73 @@
     var data = getMasterReportData(masterReportName);
     if (!data || !data.uploadedFiles) return false;
     return data.uploadedFiles.some(function (f) { return f.name === fileName && f.size === fileSize; });
+  }
+
+  // Setup progress: tracks a Master Report + Report Type combo that the user
+  // has started but not yet finished (i.e. not yet merged into the Master
+  // Report — see mergeReportTypeDataIntoMasterReport). Each record's
+  // "snapshot" holds just enough of the in-flight, normally-ephemeral upload
+  // state (parsed headers/rows, column choices) to rebuild the exact screen
+  // the user stopped on without asking them to re-upload the file. A record
+  // is removed the moment that Report Type's setup is actually completed.
+  var SETUP_STEP_LABELS = { 2: "File upload", 3: "Column mapping", 4: "Formula builder" };
+  var SETUP_TOTAL_STEPS = 5;
+
+  function getSetupProgressList() { return loadJSON(STORAGE_KEYS.setupProgress, []); }
+  function saveSetupProgressList(list) { saveJSON(STORAGE_KEYS.setupProgress, list); }
+
+  function findSetupProgressEntry(list, masterReportName, reportTypeName) {
+    return list.find(function (p) {
+      return p.masterReportName.toLowerCase() === masterReportName.toLowerCase() &&
+        p.reportTypeName.toLowerCase() === reportTypeName.toLowerCase();
+    });
+  }
+
+  function recordSetupProgress(masterReportName, reportTypeName, step, snapshot) {
+    if (!masterReportName || !reportTypeName) return;
+    var list = getSetupProgressList();
+    var entry = findSetupProgressEntry(list, masterReportName, reportTypeName);
+    if (!entry) {
+      list.push({ masterReportName: masterReportName, reportTypeName: reportTypeName, step: step, snapshot: snapshot || null, lastUpdated: new Date().toISOString() });
+    } else {
+      if (step >= entry.step) {
+        entry.step = step;
+        if (snapshot) entry.snapshot = snapshot;
+      }
+      entry.lastUpdated = new Date().toISOString();
+    }
+    saveSetupProgressList(list);
+  }
+
+  function clearSetupProgress(masterReportName, reportTypeName) {
+    if (!masterReportName || !reportTypeName) return;
+    var list = getSetupProgressList().filter(function (p) {
+      return !(p.masterReportName.toLowerCase() === masterReportName.toLowerCase() &&
+        p.reportTypeName.toLowerCase() === reportTypeName.toLowerCase());
+    });
+    saveSetupProgressList(list);
+  }
+
+  // Only Master Reports with zero completed Report Types are "in progress" —
+  // once at least one Report Type has been merged, the Master Report is a
+  // Template (see getMasterReports()) and stays one even if another Report
+  // Type is later started and abandoned on it. Grouped by Master Report name
+  // since that's the unit shown on the home screen; when a Master Report has
+  // more than one incomplete Report Type, the most recently touched one
+  // represents the card (its step/snapshot drive the progress bar and Resume).
+  function getInProgressMasterReports() {
+    var completedNames = getMasterReports().map(function (m) { return m.name.toLowerCase(); });
+    var groups = {};
+    getSetupProgressList().forEach(function (p) {
+      if (completedNames.indexOf(p.masterReportName.toLowerCase()) !== -1) return;
+      var key = p.masterReportName.toLowerCase();
+      if (!groups[key] || new Date(p.lastUpdated) > new Date(groups[key].lastUpdated)) {
+        groups[key] = p;
+      }
+    });
+    return Object.keys(groups).map(function (k) { return groups[k]; }).sort(function (a, b) {
+      return new Date(b.lastUpdated) - new Date(a.lastUpdated);
+    });
   }
 
   /* ---------------------------------------------------------------------
@@ -424,8 +516,21 @@
     uploadError.hidden = true;
   }
 
+  var startOverModal = document.getElementById("startOverModal");
+
   document.getElementById("btnStartOver").addEventListener("click", function () {
+    startOverModal.hidden = false;
+  });
+
+  document.getElementById("btnStartOverCancel").addEventListener("click", function () {
+    startOverModal.hidden = true;
+  });
+
+  document.getElementById("btnStartOverConfirm").addEventListener("click", function () {
+    startOverModal.hidden = true;
+    localStorage.clear();
     resetFileState();
+    state.companyName = "";
     state.selectedMasterReport = "";
     state.selectedReportType = "";
     renderHomeScreen();
@@ -443,7 +548,103 @@
     showScreen("screen-master-report");
   });
 
+  function renderProgressSection() {
+    var section = document.getElementById("progressSection");
+    var list = document.getElementById("progressReportList");
+    list.innerHTML = "";
+
+    var inProgress = getInProgressMasterReports();
+    section.hidden = inProgress.length === 0;
+
+    inProgress.forEach(function (progress) {
+      var card = document.createElement("div");
+      card.className = "master-report-card master-report-card--progress";
+
+      var header = document.createElement("div");
+      header.className = "master-report-card__header";
+      var title = document.createElement("h3");
+      title.textContent = progress.masterReportName;
+      header.appendChild(title);
+      card.appendChild(header);
+
+      var meta = document.createElement("p");
+      meta.className = "master-report-card__meta";
+      meta.textContent = "Report Type: " + progress.reportTypeName;
+      card.appendChild(meta);
+
+      var percent = Math.round((progress.step / SETUP_TOTAL_STEPS) * 100);
+      var barWrap = document.createElement("div");
+      barWrap.className = "progress-bar";
+      var barFill = document.createElement("div");
+      barFill.className = "progress-bar__fill";
+      barFill.style.width = percent + "%";
+      barWrap.appendChild(barFill);
+      card.appendChild(barWrap);
+
+      var stopped = document.createElement("p");
+      stopped.className = "master-report-card__meta";
+      stopped.textContent = "Stopped at: " + SETUP_STEP_LABELS[progress.step] + " · Step " + progress.step + " of " + SETUP_TOTAL_STEPS;
+      card.appendChild(stopped);
+
+      var resumeBtn = document.createElement("button");
+      resumeBtn.type = "button";
+      resumeBtn.className = "link-btn master-report-card__resume";
+      resumeBtn.textContent = "Resume setup →";
+      resumeBtn.addEventListener("click", function () { resumeSetupProgress(progress); });
+      card.appendChild(resumeBtn);
+
+      list.appendChild(card);
+    });
+  }
+
+  // Rebuilds whichever screen a setup was stopped on from its saved
+  // snapshot, falling back a step at a time if the snapshot is missing the
+  // data that step needs (e.g. an older record saved before this field
+  // existed) — the Upload screen (re-select the file) is always a safe
+  // final fallback since raw file bytes are never persisted.
+  function resumeSetupProgress(progress) {
+    resetFileState();
+    state.selectedMasterReport = progress.masterReportName;
+    state.selectedReportType = progress.reportTypeName;
+    addReportType(state.selectedReportType);
+
+    var snap = progress.snapshot;
+
+    if (progress.step >= 4 && snap && snap.currentFileHeaders && snap.currentRenamedRows) {
+      state.fileName = snap.fileName || "";
+      state.fileSize = snap.fileSize || 0;
+      state.selectedSheetName = snap.selectedSheetName || "";
+      state.selectedHeaderRowIndex = snap.selectedHeaderRowIndex || 0;
+      state.selectedColumns = snap.selectedColumns || [];
+      state.selectedDateColumnHeader = snap.selectedDateColumnHeader || "";
+      currentFileHeaders = snap.currentFileHeaders;
+      currentFileRows = snap.currentFileRows || [];
+      currentRenamedRows = snap.currentRenamedRows;
+      dropzoneFilename.textContent = state.fileName;
+      renderColumnScreen();
+      goToFormulaStep();
+      return;
+    }
+
+    if (progress.step >= 3 && snap && snap.currentFileHeaders && snap.currentFileHeaders.length) {
+      state.fileName = snap.fileName || "";
+      state.fileSize = snap.fileSize || 0;
+      state.selectedSheetName = snap.selectedSheetName || "";
+      state.selectedHeaderRowIndex = snap.selectedHeaderRowIndex || 0;
+      currentFileHeaders = snap.currentFileHeaders;
+      currentFileRows = snap.currentFileRows || [];
+      dropzoneFilename.textContent = state.fileName;
+      renderColumnScreen();
+      showScreen("screen-columns");
+      return;
+    }
+
+    showScreen("screen-upload");
+  }
+
   function renderHomeScreen() {
+    renderProgressSection();
+
     var masterReports = getMasterReports();
     var emptyState = document.getElementById("templatesEmptyState");
     var list = document.getElementById("masterReportList");
@@ -597,6 +798,7 @@
     state.selectedMasterReport = resolveExistingMasterReportName(masterReportName);
     state.selectedReportType = resolveExistingReportTypeName(reportTypeName);
     addReportType(state.selectedReportType);
+    recordSetupProgress(state.selectedMasterReport, state.selectedReportType, 2, null);
     showScreen("screen-upload");
   });
 
@@ -769,6 +971,14 @@
         "[SAI] First 5 headers extracted from sheet \"" + state.selectedSheetName + "\" (header row " + (state.selectedHeaderRowIndex + 1) + "):",
         currentFileHeaders.slice(0, 5)
       );
+      recordSetupProgress(state.selectedMasterReport, state.selectedReportType, 3, {
+        fileName: state.fileName,
+        fileSize: state.fileSize,
+        selectedSheetName: state.selectedSheetName,
+        selectedHeaderRowIndex: state.selectedHeaderRowIndex,
+        currentFileHeaders: currentFileHeaders,
+        currentFileRows: currentFileRows
+      });
       renderColumnScreen();
       showScreen("screen-columns");
     } catch (err) {
@@ -809,6 +1019,16 @@
 
     var savedDateHeader = getDateColumnPreference(state.selectedReportType);
 
+    // When this Master Report already has at least one other Report Type
+    // merged into it, its existing standardised column names (e.g. "City",
+    // "Amount") are offered as a dropdown so a second/third file's columns
+    // can be mapped onto the SAME names instead of accidentally creating
+    // near-duplicate columns (e.g. "City" vs "city"). First time a Master
+    // Report is being set up there's no existing schema yet, so the screen
+    // falls back to the original plain rename text box, unchanged.
+    var masterData = getMasterReportData(state.selectedMasterReport);
+    var masterColumns = masterData ? masterData.columns.filter(function (c) { return c !== "Report Type"; }) : [];
+
     columnsTableBody.innerHTML = "";
     // This screen must show exactly the file's own headers and nothing else.
     // Every row is built solely from currentFileHeaders (set by
@@ -837,11 +1057,57 @@
       tr.appendChild(tdOrig);
 
       var tdRename = document.createElement("td");
-      var renameInput = document.createElement("input");
-      renameInput.type = "text";
-      renameInput.className = "column-rename";
-      renameInput.value = renameTo;
-      tdRename.appendChild(renameInput);
+      if (masterColumns.length) {
+        var existingMatch = masterColumns.find(function (c) { return c.toLowerCase() === header.toLowerCase(); });
+
+        var renameSelect = document.createElement("select");
+        renameSelect.className = "column-rename-select";
+        masterColumns.forEach(function (c) {
+          var opt = document.createElement("option");
+          opt.value = c;
+          opt.textContent = c;
+          renameSelect.appendChild(opt);
+        });
+        var newOpt = document.createElement("option");
+        newOpt.value = "__new__";
+        newOpt.textContent = "+ Add new column…";
+        renameSelect.appendChild(newOpt);
+
+        var newNameInput = document.createElement("input");
+        newNameInput.type = "text";
+        newNameInput.className = "column-rename column-rename-new";
+        newNameInput.placeholder = "New column name";
+
+        if (existingMatch) {
+          renameSelect.value = existingMatch;
+          newNameInput.value = existingMatch;
+          newNameInput.hidden = true;
+        } else {
+          renameSelect.value = "__new__";
+          newNameInput.value = renameTo;
+          newNameInput.hidden = false;
+        }
+
+        renameSelect.addEventListener("change", function () {
+          if (renameSelect.value === "__new__") {
+            newNameInput.hidden = false;
+            newNameInput.value = "";
+            newNameInput.focus();
+          } else {
+            newNameInput.hidden = true;
+            newNameInput.value = renameSelect.value;
+          }
+        });
+
+        tdRename.appendChild(renameSelect);
+        tdRename.appendChild(newNameInput);
+      } else {
+        var renameInput = document.createElement("input");
+        renameInput.type = "text";
+        renameInput.className = "column-rename";
+        renameInput.value = renameTo;
+        tdRename.appendChild(renameInput);
+      }
       tr.appendChild(tdRename);
 
       var tdDate = document.createElement("td");
@@ -856,13 +1122,104 @@
 
       columnsTableBody.appendChild(tr);
     });
+
+    updateMissingColumnsSection();
+  }
+
+  // Reads the effective "rename to" value for a column-selection table row,
+  // covering both the plain text box (first Report Type ever, or a Master
+  // Report with no other columns yet) and the select+new-name-input pair
+  // (second+ Report Type, mapping onto — or extending — the Master
+  // Report's existing standardised columns).
+  function getRenameToForRow(tr, header) {
+    var select = tr.querySelector(".column-rename-select");
+    if (select) {
+      if (select.value === "__new__") {
+        var newInput = tr.querySelector(".column-rename-new");
+        return (newInput.value.trim() || header);
+      }
+      return select.value;
+    }
+    var plainInput = tr.querySelector(".column-rename");
+    return plainInput.value.trim() || header;
+  }
+
+  // Any column already standardised on this Master Report that the current
+  // file doesn't map onto (because it has no matching/included header) is
+  // offered here so the user can fill every row of THIS file with one
+  // default value instead of leaving the column blank for it. Recomputed
+  // live whenever the include checkboxes or rename choices change, while
+  // preserving whatever the user already typed for a column that's still
+  // missing after the recompute.
+  function updateMissingColumnsSection() {
+    var wrap = document.getElementById("missingColumnsWrap");
+    var hint = document.getElementById("missingColumnsHint");
+    var list = document.getElementById("missingColumnsList");
+
+    var masterData = getMasterReportData(state.selectedMasterReport);
+    var masterColumns = masterData ? masterData.columns.filter(function (c) { return c !== "Report Type"; }) : [];
+
+    if (!masterColumns.length) {
+      wrap.hidden = true;
+      list.innerHTML = "";
+      return;
+    }
+
+    var previousValues = {};
+    list.querySelectorAll(".missing-column-value").forEach(function (input) {
+      previousValues[input.dataset.column] = input.value;
+    });
+
+    var covered = [];
+    columnsTableBody.querySelectorAll("tr").forEach(function (tr) {
+      var checkbox = tr.querySelector(".column-include");
+      if (!checkbox.checked) return;
+      covered.push(getRenameToForRow(tr, tr.dataset.header).toLowerCase());
+    });
+
+    var missing = masterColumns.filter(function (c) { return covered.indexOf(c.toLowerCase()) === -1; });
+
+    wrap.hidden = missing.length === 0;
+    list.innerHTML = "";
+    hint.textContent = "These columns exist in \"" + state.selectedMasterReport + "\" but weren't found in this file. Enter a value to fill every row of this file, or leave blank.";
+
+    missing.forEach(function (col) {
+      var row = document.createElement("div");
+      row.className = "missing-column-row";
+
+      var name = document.createElement("span");
+      name.className = "missing-column-row__name";
+      name.textContent = col;
+      row.appendChild(name);
+
+      var input = document.createElement("input");
+      input.type = "text";
+      input.className = "missing-column-value";
+      input.dataset.column = col;
+      input.placeholder = "Default value for every row (text or number)";
+      if (Object.prototype.hasOwnProperty.call(previousValues, col)) input.value = previousValues[col];
+      row.appendChild(input);
+
+      list.appendChild(row);
+    });
   }
 
   document.getElementById("btnColumnsSelectAll").addEventListener("click", function () {
     columnsTableBody.querySelectorAll(".column-include").forEach(function (cb) { cb.checked = true; });
+    updateMissingColumnsSection();
   });
   document.getElementById("btnColumnsDeselectAll").addEventListener("click", function () {
     columnsTableBody.querySelectorAll(".column-include").forEach(function (cb) { cb.checked = false; });
+    updateMissingColumnsSection();
+  });
+  // Delegated so it also covers the include checkbox and rename dropdown of
+  // every row, which are (re)created fresh each time renderColumnScreen()
+  // runs — any change that could affect which Master Report columns this
+  // file no longer covers should refresh the missing-columns list live.
+  columnsTableBody.addEventListener("change", function (e) {
+    if (e.target.classList.contains("column-include") || e.target.classList.contains("column-rename-select")) {
+      updateMissingColumnsSection();
+    }
   });
   document.getElementById("btnColumnsClearDate").addEventListener("click", function () {
     columnsTableBody.querySelectorAll(".column-date-radio").forEach(function (r) { r.checked = false; });
@@ -885,9 +1242,8 @@
     columnsTableBody.querySelectorAll("tr").forEach(function (tr) {
       var header = tr.dataset.header;
       var checkbox = tr.querySelector(".column-include");
-      var renameInput = tr.querySelector(".column-rename");
       var dateRadio = tr.querySelector(".column-date-radio");
-      var renameTo = renameInput.value.trim() || header;
+      var renameTo = getRenameToForRow(tr, header);
       structure[header] = {
         include: checkbox.checked,
         renameTo: renameTo
@@ -898,13 +1254,38 @@
     saveColumnStructureFor(state.selectedReportType, structure);
     saveDateColumnPreferenceFor(state.selectedReportType, dateHeaderOriginal || null);
 
+    currentRenamedRows = buildRenamedRows(currentFileRows, structure);
+
+    // Any Master Report column left unmapped by this file (see
+    // updateMissingColumnsSection) gets the value the user typed stamped
+    // onto every row of this file, and is tracked as a real column for this
+    // upload too — same as if the file had actually contained it.
+    document.querySelectorAll("#missingColumnsList .missing-column-value").forEach(function (input) {
+      var value = input.value.trim();
+      if (!value) return;
+      var col = input.dataset.column;
+      currentRenamedRows.forEach(function (row) { row[col] = value; });
+      if (selectedColumns.indexOf(col) === -1) selectedColumns.push(col);
+    });
+
     state.selectedColumns = selectedColumns;
     // Store the renamed key (not the original header) so the merge step
     // can look the date value up directly on the final row objects.
     state.selectedDateColumnHeader = (dateHeaderOriginal && structure[dateHeaderOriginal].include)
       ? structure[dateHeaderOriginal].renameTo
       : "";
-    currentRenamedRows = buildRenamedRows(currentFileRows, structure);
+
+    recordSetupProgress(state.selectedMasterReport, state.selectedReportType, 4, {
+      fileName: state.fileName,
+      fileSize: state.fileSize,
+      selectedSheetName: state.selectedSheetName,
+      selectedHeaderRowIndex: state.selectedHeaderRowIndex,
+      currentFileHeaders: currentFileHeaders,
+      currentFileRows: currentFileRows,
+      selectedColumns: state.selectedColumns,
+      selectedDateColumnHeader: state.selectedDateColumnHeader,
+      currentRenamedRows: currentRenamedRows
+    });
 
     goToFormulaStep();
   });
@@ -912,12 +1293,12 @@
   /* ---------------------------------------------------------------------
    * Screen: Formula builder
    *
-   * Column dropdowns are populated solely from state.selectedColumns (the
-   * included + renamed columns from the Column Selection screen), so this
-   * screen is always in sync with whatever the user just chose to keep.
-   * If a saved formula references a column that no longer exists in the
-   * current selection, it's still added as an extra option so the saved
-   * choice stays visible instead of silently reverting to blank.
+   * Formulas are typed as free-text expressions (e.g. "Quantity * Price +
+   * GST - Discount") referencing column names, evaluated top to bottom in
+   * DOM/array order so a later formula can use an earlier formula's own
+   * output as one of its inputs. See the expression engine below
+   * (tokenizeExpression / parseExpressionTokens / evaluateAst) and the
+   * ordering validation in the btnFormulaNext handler.
    * ------------------------------------------------------------------- */
   var formulaList = document.getElementById("formulaList");
   var formulaEmptyState = document.getElementById("formulaEmptyState");
@@ -933,115 +1314,334 @@
     formulaEmptyState.hidden = formulaList.children.length > 0;
   }
 
-  function buildColumnSelect(selectEl, selectedValue) {
-    selectEl.innerHTML = "";
-    var placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select column…";
-    selectEl.appendChild(placeholder);
-
-    var cols = state.selectedColumns.slice();
-    if (selectedValue && cols.indexOf(selectedValue) === -1) cols.push(selectedValue);
-    cols.forEach(function (col) {
-      var opt = document.createElement("option");
-      opt.value = col;
-      opt.textContent = col;
-      selectEl.appendChild(opt);
-    });
-    selectEl.value = selectedValue || "";
+  function showFormulaError(message) {
+    formulaErrorMsg.textContent = message;
+    formulaErrorMsg.hidden = false;
   }
 
-  function buildOperandSelect(selectEl, selectedColumnValue) {
-    selectEl.innerHTML = "";
-    var placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select column…";
-    selectEl.appendChild(placeholder);
-
-    var numberOpt = document.createElement("option");
-    numberOpt.value = "__number__";
-    numberOpt.textContent = "Enter a number…";
-    selectEl.appendChild(numberOpt);
-
-    var cols = state.selectedColumns.slice();
-    if (selectedColumnValue && cols.indexOf(selectedColumnValue) === -1) cols.push(selectedColumnValue);
-    cols.forEach(function (col) {
-      var opt = document.createElement("option");
-      opt.value = col;
-      opt.textContent = col;
-      selectEl.appendChild(opt);
+  // Formulas saved before this screen's redesign used a dropdown-built
+  // {firstColumn, steps} shape instead of a typed expression string. Rather
+  // than discarding a user's previously-built validation checks, this
+  // reconstructs an equivalent expression from that shape the first time
+  // it's loaded — every save from this point on writes the new shape.
+  function migrateLegacyFormula(f) {
+    if (typeof f.expression === "string") return f;
+    var expr = f.firstColumn || "";
+    (f.steps || []).forEach(function (s) {
+      var operand = s.operandType === "number" ? s.operandNumber : s.operandColumn;
+      if (operand === undefined || operand === "") return;
+      expr += " " + s.operator + " " + operand;
     });
-    selectEl.value = selectedColumnValue || "";
+    return { name: f.name || "", expression: expr };
   }
 
-  function createStepRow(stepData) {
-    var row = document.createElement("div");
-    row.className = "formula-step";
+  /* --- Expression engine ------------------------------------------------
+   * Column names may contain spaces (e.g. "Order ID"), so tokens aren't
+   * split on whitespace — instead, at every position the longest known
+   * column name that matches there wins (maximal munch), which is what
+   * lets multi-word names coexist with single-character operators.
+   * ------------------------------------------------------------------- */
+  function tokenizeExpression(expression, knownNames) {
+    var names = knownNames.slice().sort(function (a, b) { return b.length - a.length; });
+    var tokens = [];
+    var i = 0;
+    var expr = expression || "";
+    while (i < expr.length) {
+      var ch = expr[i];
+      if (/\s/.test(ch)) { i++; continue; }
+      if (ch === "(" || ch === ")") { tokens.push({ type: "paren", value: ch }); i++; continue; }
+      if ("+-*/".indexOf(ch) !== -1) { tokens.push({ type: "op", value: ch }); i++; continue; }
 
-    var operatorSelect = document.createElement("select");
-    operatorSelect.className = "formula-operator";
-    [["+", "+"], ["-", "−"], ["*", "×"], ["/", "÷"]].forEach(function (pair) {
-      var opt = document.createElement("option");
-      opt.value = pair[0];
-      opt.textContent = pair[1];
-      operatorSelect.appendChild(opt);
-    });
-    operatorSelect.value = (stepData && stepData.operator) || "+";
-    row.appendChild(operatorSelect);
+      var matchedName = null;
+      for (var n = 0; n < names.length; n++) {
+        var name = names[n];
+        if (expr.substr(i, name.length).toLowerCase() === name.toLowerCase()) { matchedName = name; break; }
+      }
+      if (matchedName) { tokens.push({ type: "column", value: matchedName }); i += matchedName.length; continue; }
 
-    var operandSelect = document.createElement("select");
-    operandSelect.className = "formula-operand-select";
-    var isNumber = stepData && stepData.operandType === "number";
-    buildOperandSelect(operandSelect, isNumber ? "" : (stepData && stepData.operandColumn) || "");
+      var numMatch = /^\d+(\.\d+)?/.exec(expr.slice(i));
+      if (numMatch) { tokens.push({ type: "number", value: parseFloat(numMatch[0]) }); i += numMatch[0].length; continue; }
 
-    var numberInput = document.createElement("input");
-    numberInput.type = "number";
-    numberInput.step = "any";
-    numberInput.placeholder = "Value";
-    numberInput.className = "formula-operand-number";
+      var unkMatch = /^[^\s+\-*/()]+/.exec(expr.slice(i));
+      var unkStr = unkMatch ? unkMatch[0] : ch;
+      tokens.push({ type: "unknown", value: unkStr });
+      i += unkStr.length;
+    }
+    return tokens;
+  }
 
-    if (isNumber) {
-      operandSelect.value = "__number__";
-      numberInput.value = stepData.operandNumber !== undefined ? stepData.operandNumber : "";
-      numberInput.hidden = false;
-    } else {
-      numberInput.hidden = true;
+  // Recursive-descent parser: expr := term (('+'|'-') term)*,
+  // term := factor (('*'|'/') factor)*, factor := number | column |
+  // '(' expr ')' | ('+'|'-') factor. Standard precedence + parentheses,
+  // same as any spreadsheet formula bar.
+  function parseExpressionTokens(tokens) {
+    var pos = 0;
+    function peek() { return tokens[pos]; }
+    function next() { return tokens[pos++]; }
+
+    function parseExpr() {
+      var node = parseTerm();
+      while (peek() && peek().type === "op" && (peek().value === "+" || peek().value === "-")) {
+        var op = next().value;
+        node = { type: "binary", op: op, left: node, right: parseTerm() };
+      }
+      return node;
+    }
+    function parseTerm() {
+      var node = parseFactor();
+      while (peek() && peek().type === "op" && (peek().value === "*" || peek().value === "/")) {
+        var op = next().value;
+        node = { type: "binary", op: op, left: node, right: parseFactor() };
+      }
+      return node;
+    }
+    function parseFactor() {
+      var tok = peek();
+      if (!tok) throw new Error("Formula is incomplete.");
+      if (tok.type === "op" && (tok.value === "-" || tok.value === "+")) {
+        next();
+        var inner = parseFactor();
+        return tok.value === "-" ? { type: "unary", operand: inner } : inner;
+      }
+      if (tok.type === "paren" && tok.value === "(") {
+        next();
+        var innerExpr = parseExpr();
+        if (!peek() || peek().type !== "paren" || peek().value !== ")") throw new Error("Missing closing parenthesis.");
+        next();
+        return innerExpr;
+      }
+      if (tok.type === "number") { next(); return { type: "number", value: tok.value }; }
+      if (tok.type === "column") { next(); return { type: "column", name: tok.value }; }
+      if (tok.type === "unknown") throw new Error("Unknown column \"" + tok.value + "\".");
+      throw new Error("Unexpected \"" + tok.value + "\" in formula.");
     }
 
-    operandSelect.addEventListener("change", function () {
-      if (operandSelect.value === "__number__") {
-        numberInput.hidden = false;
-        numberInput.focus();
-      } else {
-        numberInput.hidden = true;
+    var ast = parseExpr();
+    if (pos < tokens.length) {
+      var trailing = tokens[pos];
+      throw new Error("Unexpected \"" + trailing.value + "\" in formula.");
+    }
+    return ast;
+  }
+
+  function evaluateAst(node, row) {
+    switch (node.type) {
+      case "number": return node.value;
+      case "column": {
+        var v = parseFloat(row[node.name]);
+        return isNaN(v) ? 0 : v;
+      }
+      case "unary": return -evaluateAst(node.operand, row);
+      case "binary": {
+        var l = evaluateAst(node.left, row);
+        var r = evaluateAst(node.right, row);
+        if (node.op === "+") return l + r;
+        if (node.op === "-") return l - r;
+        if (node.op === "*") return l * r;
+        return r === 0 ? NaN : l / r;
+      }
+      default: return NaN;
+    }
+  }
+
+  function computeExpressionValue(row, ast) {
+    if (!ast) return "";
+    var v = evaluateAst(ast, row);
+    return isNaN(v) || !isFinite(v) ? "" : v;
+  }
+
+  /* --- Row markup, drag reordering, autocomplete, pill preview --------- */
+
+  // Every source column (tagged with the current Report Type) plus every
+  // OTHER formula currently in the list (tagged "calculated") — always read
+  // fresh from the live DOM so a rename or a newly-added row is reflected
+  // immediately in every other row's autocomplete, with no extra wiring.
+  function getAvailableColumnsForFormulaRow(row) {
+    var result = state.selectedColumns.map(function (c) { return { name: c, origin: state.selectedReportType }; });
+    formulaList.querySelectorAll(".formula-row").forEach(function (otherRow) {
+      if (otherRow === row) return;
+      var otherName = otherRow.querySelector(".formula-name").value.trim();
+      if (otherName) result.push({ name: otherName, origin: "calculated" });
+    });
+    return result;
+  }
+
+  function renderExpressionPreview(previewEl, expression, knownNames) {
+    previewEl.innerHTML = "";
+    if (!expression.trim()) {
+      var placeholder = document.createElement("span");
+      placeholder.className = "formula-expr-preview-empty";
+      placeholder.textContent = "Type a formula, e.g. Quantity * Price + GST − Discount";
+      previewEl.appendChild(placeholder);
+      return;
+    }
+    tokenizeExpression(expression, knownNames).forEach(function (t) {
+      var span = document.createElement("span");
+      if (t.type === "column") { span.className = "formula-pill"; span.textContent = t.value; }
+      else if (t.type === "unknown") { span.className = "formula-pill formula-pill--unknown"; span.textContent = t.value; }
+      else if (t.type === "number") { span.className = "formula-token-number"; span.textContent = t.value; }
+      else { span.className = "formula-token-op"; span.textContent = t.value; }
+      previewEl.appendChild(span);
+    });
+  }
+
+  function refreshFormulaPreview(row) {
+    var input = row.querySelector(".formula-expr-input");
+    var previewEl = row.querySelector(".formula-expr-preview");
+    var names = getAvailableColumnsForFormulaRow(row).map(function (c) { return c.name; });
+    renderExpressionPreview(previewEl, input.value, names);
+  }
+
+  function refreshAllFormulaPreviews() {
+    formulaList.querySelectorAll(".formula-row").forEach(function (row) { refreshFormulaPreview(row); });
+  }
+
+  // Autocomplete matches against the "operand currently being typed" —
+  // bounded by the nearest operator/parenthesis on each side rather than
+  // whitespace, since a column name like "Order ID" has to be able to
+  // contain a space itself while still being treated as one candidate.
+  function attachFormulaAutocomplete(row, input, dropdown) {
+    var activeIndex = -1;
+
+    function operandBounds() {
+      var val = input.value;
+      var pos = input.selectionStart;
+      var start = pos;
+      while (start > 0 && "+-*/()".indexOf(val[start - 1]) === -1) start--;
+      var end = pos;
+      while (end < val.length && "+-*/()".indexOf(val[end]) === -1) end++;
+      return { start: start, end: end, pos: pos };
+    }
+
+    function setActive(items) {
+      items.forEach(function (it, idx) { it.classList.toggle("formula-autocomplete-item--active", idx === activeIndex); });
+    }
+
+    function showSuggestions() {
+      var bounds = operandBounds();
+      var partial = input.value.slice(bounds.start, bounds.pos).trim().toLowerCase();
+      var available = getAvailableColumnsForFormulaRow(row);
+      var matches = available.filter(function (c) { return !partial || c.name.toLowerCase().indexOf(partial) !== -1; }).slice(0, 8);
+
+      dropdown.innerHTML = "";
+      if (!matches.length) { dropdown.hidden = true; return; }
+      activeIndex = 0;
+      matches.forEach(function (c, idx) {
+        var item = document.createElement("div");
+        item.className = "formula-autocomplete-item" + (idx === 0 ? " formula-autocomplete-item--active" : "");
+        item.dataset.name = c.name;
+        var nameSpan = document.createElement("span");
+        nameSpan.className = "formula-autocomplete-name";
+        nameSpan.textContent = c.name;
+        item.appendChild(nameSpan);
+        var originSpan = document.createElement("span");
+        originSpan.className = "formula-autocomplete-origin";
+        originSpan.textContent = c.origin;
+        item.appendChild(originSpan);
+        dropdown.appendChild(item);
+      });
+      dropdown.hidden = false;
+    }
+
+    function acceptSuggestion(name) {
+      var bounds = operandBounds();
+      var before = input.value.slice(0, bounds.start);
+      var after = input.value.slice(bounds.end);
+      input.value = before + name + " " + after;
+      var newPos = (before + name + " ").length;
+      input.setSelectionRange(newPos, newPos);
+      dropdown.hidden = true;
+      refreshFormulaPreview(row);
+      input.focus();
+    }
+
+    input.addEventListener("input", function () {
+      refreshFormulaPreview(row);
+      showSuggestions();
+    });
+    input.addEventListener("focus", showSuggestions);
+    input.addEventListener("keydown", function (e) {
+      if (dropdown.hidden) return;
+      var items = dropdown.querySelectorAll(".formula-autocomplete-item");
+      if (e.key === "ArrowDown") { e.preventDefault(); activeIndex = Math.min(activeIndex + 1, items.length - 1); setActive(items); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); activeIndex = Math.max(activeIndex - 1, 0); setActive(items); }
+      else if (e.key === "Enter" || e.key === "Tab") {
+        if (activeIndex >= 0 && items[activeIndex]) { e.preventDefault(); acceptSuggestion(items[activeIndex].dataset.name); }
+      } else if (e.key === "Escape") {
+        dropdown.hidden = true;
       }
     });
+    // mousedown (not click) + preventDefault keeps focus on the input so it
+    // never blurs — and therefore never hides the dropdown — before the
+    // click on a suggestion has a chance to register.
+    dropdown.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      var item = e.target.closest(".formula-autocomplete-item");
+      if (item) acceptSuggestion(item.dataset.name);
+    });
+    input.addEventListener("blur", function () {
+      setTimeout(function () { dropdown.hidden = true; }, 100);
+    });
+  }
 
-    row.appendChild(operandSelect);
-    row.appendChild(numberInput);
+  // Drag-reorders whole .formula-row elements within #formulaList — since
+  // execution/save order is just DOM order (read in readFormulasFromDOM),
+  // reordering the rows IS reordering the formulas.
+  var draggedFormulaRow = null;
 
-    var removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "link-btn formula-step-remove";
-    removeBtn.textContent = "Remove step";
-    removeBtn.addEventListener("click", function () { row.remove(); });
-    row.appendChild(removeBtn);
-
-    return row;
+  function makeFormulaRowDraggable(row, handle) {
+    handle.draggable = true;
+    handle.addEventListener("dragstart", function (e) {
+      draggedFormulaRow = row;
+      row.classList.add("formula-row--dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", "formula-row");
+    });
+    handle.addEventListener("dragend", function () {
+      row.classList.remove("formula-row--dragging");
+      formulaList.querySelectorAll(".formula-row--drag-over").forEach(function (el) { el.classList.remove("formula-row--drag-over"); });
+      draggedFormulaRow = null;
+    });
+    row.addEventListener("dragover", function (e) {
+      if (!draggedFormulaRow || draggedFormulaRow === row) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      row.classList.add("formula-row--drag-over");
+    });
+    row.addEventListener("dragleave", function () {
+      row.classList.remove("formula-row--drag-over");
+    });
+    row.addEventListener("drop", function (e) {
+      e.preventDefault();
+      row.classList.remove("formula-row--drag-over");
+      if (!draggedFormulaRow || draggedFormulaRow === row) return;
+      var rect = row.getBoundingClientRect();
+      var dropAfter = (e.clientY - rect.top) > rect.height / 2;
+      row.parentNode.insertBefore(draggedFormulaRow, dropAfter ? row.nextSibling : row);
+      refreshAllFormulaPreviews();
+    });
   }
 
   function addFormulaRow(formulaData) {
+    var data = formulaData ? migrateLegacyFormula(formulaData) : null;
+
     var row = document.createElement("div");
     row.className = "formula-row";
 
     var header = document.createElement("div");
     header.className = "formula-row__header";
 
+    var dragHandle = document.createElement("span");
+    dragHandle.className = "formula-drag-handle";
+    dragHandle.title = "Drag to reorder";
+    dragHandle.textContent = "⠿";
+    header.appendChild(dragHandle);
+
     var nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "formula-name";
     nameInput.placeholder = "e.g. Net Payout Check";
-    nameInput.value = (formulaData && formulaData.name) || "";
+    nameInput.value = (data && data.name) || "";
     header.appendChild(nameInput);
 
     var deleteBtn = document.createElement("button");
@@ -1058,33 +1658,40 @@
     var body = document.createElement("div");
     body.className = "formula-row__body";
 
-    var firstColumnSelect = document.createElement("select");
-    firstColumnSelect.className = "formula-first-column";
-    buildColumnSelect(firstColumnSelect, formulaData && formulaData.firstColumn);
-    body.appendChild(firstColumnSelect);
+    var exprBar = document.createElement("div");
+    exprBar.className = "formula-expr-bar";
 
-    var stepsWrap = document.createElement("div");
-    stepsWrap.className = "formula-steps";
-    body.appendChild(stepsWrap);
+    var prefix = document.createElement("span");
+    prefix.className = "formula-expr-prefix";
+    prefix.textContent = "=";
+    exprBar.appendChild(prefix);
 
-    var addStepBtn = document.createElement("button");
-    addStepBtn.type = "button";
-    addStepBtn.className = "btn formula-add-step";
-    addStepBtn.textContent = "+ Add Step";
-    addStepBtn.addEventListener("click", function () {
-      stepsWrap.appendChild(createStepRow());
-    });
-    body.appendChild(addStepBtn);
+    var exprInput = document.createElement("input");
+    exprInput.type = "text";
+    exprInput.className = "formula-expr-input";
+    exprInput.placeholder = "Quantity * Price + GST - Discount";
+    exprInput.autocomplete = "off";
+    exprInput.value = (data && data.expression) || "";
+    exprBar.appendChild(exprInput);
+
+    var dropdown = document.createElement("div");
+    dropdown.className = "formula-autocomplete";
+    dropdown.hidden = true;
+    exprBar.appendChild(dropdown);
+
+    body.appendChild(exprBar);
+
+    var previewEl = document.createElement("div");
+    previewEl.className = "formula-expr-preview";
+    body.appendChild(previewEl);
 
     row.appendChild(body);
-
-    var steps = (formulaData && formulaData.steps) || [];
-    steps.forEach(function (s) { stepsWrap.appendChild(createStepRow(s)); });
-    if (!formulaData) {
-      stepsWrap.appendChild(createStepRow());
-    }
-
     formulaList.appendChild(row);
+
+    makeFormulaRowDraggable(row, dragHandle);
+    attachFormulaAutocomplete(row, exprInput, dropdown);
+    refreshFormulaPreview(row);
+
     updateFormulaEmptyState();
     return row;
   }
@@ -1099,51 +1706,17 @@
     updateFormulaEmptyState();
   }
 
+  // Reads {name, expression} for each formula in current DOM (= drag)
+  // order — that order is exactly the top-to-bottom execution/save order.
   function readFormulasFromDOM() {
     var formulas = [];
     formulaList.querySelectorAll(".formula-row").forEach(function (row) {
-      var name = row.querySelector(".formula-name").value.trim();
-      var firstColumn = row.querySelector(".formula-first-column").value;
-      var steps = [];
-      row.querySelectorAll(".formula-step").forEach(function (stepEl) {
-        var operator = stepEl.querySelector(".formula-operator").value;
-        var operandSelect = stepEl.querySelector(".formula-operand-select");
-        var isNumber = operandSelect.value === "__number__";
-        steps.push({
-          operator: operator,
-          operandType: isNumber ? "number" : "column",
-          operandColumn: isNumber ? "" : operandSelect.value,
-          operandNumber: isNumber ? stepEl.querySelector(".formula-operand-number").value : ""
-        });
+      formulas.push({
+        name: row.querySelector(".formula-name").value.trim(),
+        expression: row.querySelector(".formula-expr-input").value.trim()
       });
-      formulas.push({ name: name, firstColumn: firstColumn, steps: steps });
     });
     return formulas;
-  }
-
-  function collectFormulaReferencedColumns(formula) {
-    var cols = [formula.firstColumn];
-    formula.steps.forEach(function (s) {
-      if (s.operandType === "column" && s.operandColumn) cols.push(s.operandColumn);
-    });
-    return cols.filter(function (c) { return !!c; });
-  }
-
-  function computeFormulaValue(row, formula) {
-    var value = parseFloat(row[formula.firstColumn]);
-    if (isNaN(value)) value = 0;
-    for (var i = 0; i < formula.steps.length; i++) {
-      var step = formula.steps[i];
-      var operand = step.operandType === "number" ? parseFloat(step.operandNumber) : parseFloat(row[step.operandColumn]);
-      if (isNaN(operand)) operand = 0;
-      switch (step.operator) {
-        case "+": value += operand; break;
-        case "-": value -= operand; break;
-        case "*": value *= operand; break;
-        case "/": value = operand === 0 ? NaN : value / operand; break;
-      }
-    }
-    return isNaN(value) || !isFinite(value) ? "" : value;
   }
 
   document.getElementById("btnAddFormula").addEventListener("click", function () {
@@ -1156,26 +1729,61 @@
 
   btnFormulaNext.addEventListener("click", function () {
     var formulas = readFormulasFromDOM();
-    saveFormulasFor(state.selectedReportType, formulas);
+    // A formula with no name would otherwise be silently dropped from
+    // becoming a column (nothing to key the row property or header on) —
+    // every formula the user builds must produce a real column, so an
+    // untitled one still gets a usable fallback name instead of vanishing.
+    formulas.forEach(function (f, idx) {
+      if (!f.name) f.name = "Formula " + (idx + 1);
+    });
     formulaErrorMsg.hidden = true;
 
-    for (var i = 0; i < formulas.length; i++) {
-      var referenced = collectFormulaReferencedColumns(formulas[i]);
-      var missingCol = referenced.find(function (c) { return state.selectedColumns.indexOf(c) === -1; });
-      if (missingCol) {
-        formulaErrorMsg.textContent = "Required column \"" + missingCol + "\" (used in formula \"" + (formulas[i].name || "Untitled") + "\") is missing from this file. Include it on the previous screen or adjust the formula.";
-        formulaErrorMsg.hidden = false;
-        return;
+    // Validate + parse in top-to-bottom order: a formula may only reference
+    // a source column or a formula that appears ABOVE it (already computed
+    // by the time this one runs) — anything else is either a typo or an
+    // ordering problem the drag handles are there to fix.
+    var allNames = state.selectedColumns.concat(formulas.map(function (f) { return f.name; }));
+    var knownSoFar = state.selectedColumns.slice();
+    var blocked = false;
+    for (var i = 0; i < formulas.length && !blocked; i++) {
+      var f = formulas[i];
+      if (!f.expression.trim()) { f.ast = null; knownSoFar.push(f.name); continue; }
+
+      var namesForThisFormula = allNames.filter(function (n) { return n.toLowerCase() !== f.name.toLowerCase(); });
+      var tokens = tokenizeExpression(f.expression, namesForThisFormula);
+
+      var unknownTok = tokens.find(function (t) { return t.type === "unknown"; });
+      if (unknownTok) {
+        showFormulaError("Formula \"" + f.name + "\" uses an unknown column \"" + unknownTok.value + "\". Check the spelling or pick it from the autocomplete list.");
+        blocked = true;
+        break;
       }
+      var notYetAvailable = tokens.find(function (t) { return t.type === "column" && knownSoFar.indexOf(t.value) === -1; });
+      if (notYetAvailable) {
+        showFormulaError("Formula \"" + f.name + "\" uses \"" + notYetAvailable.value + "\", which is created by a formula below it. Drag that formula above \"" + f.name + "\" (or drag \"" + f.name + "\" below it), then try again.");
+        blocked = true;
+        break;
+      }
+      try {
+        f.ast = parseExpressionTokens(tokens);
+      } catch (err) {
+        showFormulaError("Formula \"" + f.name + "\" has an invalid expression: " + err.message);
+        blocked = true;
+        break;
+      }
+      knownSoFar.push(f.name);
     }
+    if (blocked) return;
+
+    saveFormulasFor(state.selectedReportType, formulas.map(function (f) { return { name: f.name, expression: f.expression }; }));
 
     currentRenamedRows.forEach(function (row) {
       formulas.forEach(function (f) {
-        if (f.name) row[f.name] = computeFormulaValue(row, f);
+        row[f.name] = computeExpressionValue(row, f.ast);
       });
     });
 
-    var formulaColumnNames = formulas.filter(function (f) { return f.name; }).map(function (f) { return f.name; });
+    var formulaColumnNames = formulas.map(function (f) { return f.name; });
 
     mergeReportTypeDataIntoMasterReport(
       state.selectedMasterReport,
@@ -1185,6 +1793,7 @@
       { name: state.fileName, size: state.fileSize },
       state.selectedDateColumnHeader
     );
+    clearSetupProgress(state.selectedMasterReport, state.selectedReportType);
 
     goToPreviewStep();
   });
@@ -1192,17 +1801,65 @@
   /* ---------------------------------------------------------------------
    * Screen: Preview & export
    * ------------------------------------------------------------------- */
-  var PREVIEW_ROW_LIMIT = 10;
-
   function goToPreviewStep() {
     renderPreviewScreen();
     showScreen("screen-preview");
   }
 
+  // Drag state for header reordering — module-level since dragstart/drop
+  // fire on two different <th> elements and both need to agree on which
+  // column started the drag.
+  var previewDraggedColumn = null;
+
+  function makePreviewHeaderDraggable(th, column, headRow) {
+    th.draggable = true;
+    th.className = "preview-th-draggable";
+    th.dataset.column = column;
+
+    th.addEventListener("dragstart", function (e) {
+      previewDraggedColumn = column;
+      th.classList.add("preview-th--dragging");
+      e.dataTransfer.effectAllowed = "move";
+      // Firefox requires setData to be called for the drag to start at all.
+      e.dataTransfer.setData("text/plain", column);
+    });
+    th.addEventListener("dragend", function () {
+      th.classList.remove("preview-th--dragging");
+      headRow.querySelectorAll(".preview-th--drag-over").forEach(function (el) {
+        el.classList.remove("preview-th--drag-over");
+      });
+      previewDraggedColumn = null;
+    });
+    th.addEventListener("dragover", function (e) {
+      if (!previewDraggedColumn || previewDraggedColumn === column) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      th.classList.add("preview-th--drag-over");
+    });
+    th.addEventListener("dragleave", function () {
+      th.classList.remove("preview-th--drag-over");
+    });
+    th.addEventListener("drop", function (e) {
+      e.preventDefault();
+      th.classList.remove("preview-th--drag-over");
+      if (!previewDraggedColumn || previewDraggedColumn === column) return;
+
+      var data = getMasterReportData(state.selectedMasterReport);
+      var currentOrder = getEffectiveExportColumns(state.selectedMasterReport, data.columns);
+      var fromIdx = currentOrder.indexOf(previewDraggedColumn);
+      var toIdx = currentOrder.indexOf(column);
+      if (fromIdx === -1 || toIdx === -1) return;
+      currentOrder.splice(fromIdx, 1);
+      currentOrder.splice(toIdx, 0, previewDraggedColumn);
+      saveColumnOrderFor(state.selectedMasterReport, currentOrder);
+      renderPreviewScreen();
+    });
+  }
+
   function renderPreviewScreen() {
     var data = getMasterReportData(state.selectedMasterReport);
     var mr = getMasterReport(state.selectedMasterReport);
-    var exportColumns = data ? data.columns : [];
+    var exportColumns = data ? getEffectiveExportColumns(state.selectedMasterReport, data.columns) : [];
 
     document.getElementById("previewMasterReportName").textContent = state.selectedMasterReport;
     document.getElementById("previewMeta").textContent =
@@ -1227,12 +1884,16 @@
     exportColumns.forEach(function (c) {
       var th = document.createElement("th");
       th.textContent = c;
+      makePreviewHeaderDraggable(th, c, headRow);
       headRow.appendChild(th);
     });
 
     var body = document.getElementById("previewTableBody");
     body.innerHTML = "";
-    var previewRows = data ? data.rows.slice(0, PREVIEW_ROW_LIMIT) : [];
+    // The full merged dataset is shown (not a capped preview) — the
+    // surrounding .header-row-preview-wrap already scrolls both ways with a
+    // sticky header row, which is what makes that viable.
+    var previewRows = data ? data.rows : [];
     previewRows.forEach(function (row, idx) {
       var tr = document.createElement("tr");
       var tdSno = document.createElement("td");
@@ -1284,7 +1945,7 @@
       return;
     }
 
-    var exportColumns = data.columns; // __saiDate is bookkeeping-only, never exported
+    var exportColumns = getEffectiveExportColumns(state.selectedMasterReport, data.columns); // __saiDate is bookkeeping-only, never exported
     var todayText = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 
     var aoa = [];
