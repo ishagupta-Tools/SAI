@@ -194,10 +194,21 @@
   }
   function getEffectiveExportColumns(reportTypeName, dataColumns) {
     var saved = getColumnOrderFor(reportTypeName);
-    if (!saved) return dataColumns.slice();
-    var ordered = saved.filter(function (c) { return dataColumns.indexOf(c) !== -1; });
-    dataColumns.forEach(function (c) { if (ordered.indexOf(c) === -1) ordered.push(c); });
-    return ordered;
+    var ordered;
+    if (!saved) {
+      ordered = dataColumns.slice();
+    } else {
+      ordered = saved.filter(function (c) { return dataColumns.indexOf(c) !== -1; });
+      dataColumns.forEach(function (c) { if (ordered.indexOf(c) === -1) ordered.push(c); });
+    }
+    // Columns the user deleted on the Preview screen (see the × button in
+    // makePreviewHeaderDraggable) are dropped here — from the preview table
+    // and the Excel export together, since both are built from this one
+    // function — but never from data.columns itself, so the Analysis
+    // Dashboard and the stored rows are unaffected and the column can
+    // always be restored.
+    var deleted = getExportDecorationFor(reportTypeName).deletedColumns;
+    return ordered.filter(function (c) { return deleted.indexOf(c) === -1; });
   }
 
   // Excel export "decoration" (column widths, header bold/fill, per-column
@@ -213,13 +224,14 @@
   function getExportDecorationFor(reportTypeName) {
     var all = loadJSON(STORAGE_KEYS.exportDecoration, {});
     var saved = all[reportTypeName];
-    if (!saved) return { columnWidths: {}, headerBold: false, headerFillColor: "", numberFormats: {}, freezeHeader: false };
+    if (!saved) return { columnWidths: {}, headerBold: false, headerFillColor: "", numberFormats: {}, freezeHeader: false, deletedColumns: [] };
     return {
       columnWidths: saved.columnWidths || {},
       headerBold: !!saved.headerBold,
       headerFillColor: saved.headerFillColor || "",
       numberFormats: saved.numberFormats || {},
-      freezeHeader: !!saved.freezeHeader
+      freezeHeader: !!saved.freezeHeader,
+      deletedColumns: saved.deletedColumns || []
     };
   }
   function saveExportDecorationFor(reportTypeName, decoration) {
@@ -241,6 +253,29 @@
     var all = loadJSON(STORAGE_KEYS.dashboardCustom, {});
     all[masterReportName] = custom;
     saveJSON(STORAGE_KEYS.dashboardCustom, all);
+  }
+
+  // Deletes a Master Report (template) everywhere it's stored: the home
+  // screen registry, its merged row data, its dashboard custom-chart picks,
+  // and any in-progress setup records pointing at it. Deliberately leaves
+  // every per-Report-Type preference (column structure, formulas, sheet /
+  // header row / column order / export decoration) alone — Report Types
+  // are a global reusable list shared across Master Reports, so another
+  // (or a future) Master Report using the same Report Type keeps working.
+  function deleteMasterReportEverywhere(masterReportName) {
+    saveMasterReports(getMasterReports().filter(function (m) { return m.name !== masterReportName; }));
+
+    var allData = loadJSON(STORAGE_KEYS.masterReportData, {});
+    delete allData[masterReportName];
+    saveJSON(STORAGE_KEYS.masterReportData, allData);
+
+    var allCustom = loadJSON(STORAGE_KEYS.dashboardCustom, {});
+    delete allCustom[masterReportName];
+    saveJSON(STORAGE_KEYS.dashboardCustom, allCustom);
+
+    saveSetupProgressList(getSetupProgressList().filter(function (p) {
+      return p.masterReportName.toLowerCase() !== masterReportName.toLowerCase();
+    }));
   }
 
   function parseDateSafe(value) {
@@ -672,6 +707,28 @@
       var title = document.createElement("h3");
       title.textContent = progress.masterReportName;
       header.appendChild(title);
+
+      // Removes every in-progress record for this Master Report, not just
+      // the most-recent one this card happens to display (see the grouping
+      // in getInProgressMasterReports) — the card is the Master Report's
+      // sole representative here, so deleting it must not leave an older
+      // abandoned Report Type's record behind to resurrect the card.
+      var deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "link-btn card-delete-btn";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", function () {
+        var ok = window.confirm(
+          "Delete the in-progress report \"" + progress.masterReportName + "\"?\n\n" +
+          "Its setup progress will be discarded. This cannot be undone."
+        );
+        if (!ok) return;
+        saveSetupProgressList(getSetupProgressList().filter(function (p) {
+          return p.masterReportName.toLowerCase() !== progress.masterReportName.toLowerCase();
+        }));
+        renderHomeScreen();
+      });
+      header.appendChild(deleteBtn);
       card.appendChild(header);
 
       var meta = document.createElement("p");
@@ -763,7 +820,6 @@
     masterReports.forEach(function (mr) {
       var data = getMasterReportData(mr.name);
       var rowCount = data ? data.rows.length : 0;
-      var updatedText = formatDateForDisplay(mr.lastUpdated);
 
       var card = document.createElement("div");
       card.className = "master-report-card";
@@ -773,11 +829,34 @@
       var title = document.createElement("h3");
       title.textContent = mr.name;
       header.appendChild(title);
+
+      var deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "link-btn card-delete-btn";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", function () {
+        var ok = window.confirm(
+          "Delete the template \"" + mr.name + "\"?\n\n" +
+          "This removes the template and its stored data. Report Type mappings and formulas stay saved for reuse. This cannot be undone."
+        );
+        if (!ok) return;
+        deleteMasterReportEverywhere(mr.name);
+        renderHomeScreen();
+      });
+      header.appendChild(deleteBtn);
       card.appendChild(header);
 
+      // A Template card describes the reusable blueprint (which Report
+      // Types it standardises and how many columns they map onto), never
+      // the specific rows that happen to be stored — a row count / updated
+      // date here misreads as "last month's data is still sitting in this
+      // template".
+      var typeCount = mr.reportTypesUsed.length;
+      var columnCount = data ? data.columns.filter(function (c) { return c !== "Report Type"; }).length : 0;
       var meta = document.createElement("p");
       meta.className = "master-report-card__meta";
-      meta.textContent = rowCount + " row" + (rowCount === 1 ? "" : "s") + (updatedText ? " · Updated " + updatedText : "");
+      meta.textContent = typeCount + " report type" + (typeCount === 1 ? "" : "s") +
+        " · " + columnCount + " column" + (columnCount === 1 ? "" : "s") + " mapped";
       card.appendChild(meta);
 
       if (mr.reportTypesUsed.length) {
@@ -1570,6 +1649,10 @@
    * split on whitespace — instead, at every position the longest known
    * column name that matches there wins (maximal munch), which is what
    * lets multi-word names coexist with single-character operators.
+   *
+   * Besides arithmetic, the engine supports the CONCATENATE(a, b, ...)
+   * function (any mix of columns, quoted text like ", " and numbers),
+   * which produces a text value instead of a numeric one.
    * ------------------------------------------------------------------- */
   function tokenizeExpression(expression, knownNames) {
     var names = knownNames.slice().sort(function (a, b) { return b.length - a.length; });
@@ -1580,7 +1663,33 @@
       var ch = expr[i];
       if (/\s/.test(ch)) { i++; continue; }
       if (ch === "(" || ch === ")") { tokens.push({ type: "paren", value: ch }); i++; continue; }
+      if (ch === ",") { tokens.push({ type: "comma", value: "," }); i++; continue; }
       if ("+-*/".indexOf(ch) !== -1) { tokens.push({ type: "op", value: ch }); i++; continue; }
+
+      // Quoted text literal ("..." or '...'), for CONCATENATE separators
+      // like ", ". Tokenized before anything else so operator/comma
+      // characters inside the quotes never split it.
+      if (ch === '"' || ch === "'") {
+        var closeIdx = expr.indexOf(ch, i + 1);
+        if (closeIdx === -1) {
+          tokens.push({ type: "unknown", value: expr.slice(i) });
+          i = expr.length;
+          continue;
+        }
+        tokens.push({ type: "string", value: expr.slice(i + 1, closeIdx) });
+        i = closeIdx + 1;
+        continue;
+      }
+
+      // Function name — only when actually followed by "(", so a source
+      // column that happens to be named "Concatenate" still resolves as a
+      // column via the name matching below.
+      var funcMatch = /^CONCATENATE(?=\s*\()/i.exec(expr.slice(i));
+      if (funcMatch) {
+        tokens.push({ type: "func", value: "CONCATENATE" });
+        i += funcMatch[0].length;
+        continue;
+      }
 
       var matchedName = null;
       for (var n = 0; n < names.length; n++) {
@@ -1592,7 +1701,7 @@
       var numMatch = /^\d+(\.\d+)?/.exec(expr.slice(i));
       if (numMatch) { tokens.push({ type: "number", value: parseFloat(numMatch[0]) }); i += numMatch[0].length; continue; }
 
-      var unkMatch = /^[^\s+\-*/()]+/.exec(expr.slice(i));
+      var unkMatch = /^[^\s+\-*/(),"']+/.exec(expr.slice(i));
       var unkStr = unkMatch ? unkMatch[0] : ch;
       tokens.push({ type: "unknown", value: unkStr });
       i += unkStr.length;
@@ -1601,9 +1710,12 @@
   }
 
   // Recursive-descent parser: expr := term (('+'|'-') term)*,
-  // term := factor (('*'|'/') factor)*, factor := number | column |
-  // '(' expr ')' | ('+'|'-') factor. Standard precedence + parentheses,
-  // same as any spreadsheet formula bar.
+  // term := factor (('*'|'/') factor)*, factor := number | column | string |
+  // CONCATENATE '(' expr (',' expr)* ')' | '(' expr ')' | ('+'|'-') factor.
+  // Standard precedence + parentheses, same as any spreadsheet formula bar.
+  // A comma is only meaningful inside a function's argument list — parseExpr
+  // naturally stops at one, and anywhere else it falls through to the
+  // trailing-token error below.
   function parseExpressionTokens(tokens) {
     var pos = 0;
     function peek() { return tokens[pos]; }
@@ -1640,6 +1752,24 @@
         next();
         return innerExpr;
       }
+      if (tok.type === "func") {
+        next();
+        if (!peek() || peek().type !== "paren" || peek().value !== "(") {
+          throw new Error("CONCATENATE must be followed by (…).");
+        }
+        next();
+        var args = [parseExpr()];
+        while (peek() && peek().type === "comma") {
+          next();
+          args.push(parseExpr());
+        }
+        if (!peek() || peek().type !== "paren" || peek().value !== ")") {
+          throw new Error("Missing closing parenthesis after CONCATENATE arguments.");
+        }
+        next();
+        return { type: "concat", args: args };
+      }
+      if (tok.type === "string") { next(); return { type: "string", value: tok.value }; }
       if (tok.type === "number") { next(); return { type: "number", value: tok.value }; }
       if (tok.type === "column") { next(); return { type: "column", name: tok.value }; }
       if (tok.type === "unknown") throw new Error("Unknown column \"" + tok.value + "\".");
@@ -1670,12 +1800,44 @@
         if (node.op === "*") return l * r;
         return r === 0 ? NaN : l / r;
       }
+      // A CONCATENATE (or bare text literal) used inside arithmetic is
+      // coerced to a number when its text happens to be numeric, NaN
+      // otherwise — same as how Excel treats ="1"&"2" + 0.
+      case "string": {
+        var sv = parseFloat(node.value);
+        return isNaN(sv) ? NaN : sv;
+      }
+      case "concat": {
+        var cv = parseFloat(evaluateAstText(node, row));
+        return isNaN(cv) ? NaN : cv;
+      }
       default: return NaN;
+    }
+  }
+
+  // Text-context evaluation, used for CONCATENATE arguments and results:
+  // columns yield their raw cell text (not parseFloat'd to 0 like the
+  // numeric evaluator does), and nested arithmetic yields its computed
+  // number rendered as text ("" when it doesn't evaluate).
+  function evaluateAstText(node, row) {
+    switch (node.type) {
+      case "string": return node.value;
+      case "column": {
+        var v = row[node.name];
+        return v === undefined || v === null ? "" : String(v);
+      }
+      case "concat":
+        return node.args.map(function (a) { return evaluateAstText(a, row); }).join("");
+      default: {
+        var n = evaluateAst(node, row);
+        return isNaN(n) || !isFinite(n) ? "" : String(n);
+      }
     }
   }
 
   function computeExpressionValue(row, ast) {
     if (!ast) return "";
+    if (ast.type === "concat" || ast.type === "string") return evaluateAstText(ast, row);
     var v = evaluateAst(ast, row);
     return isNaN(v) || !isFinite(v) ? "" : v;
   }
@@ -1693,6 +1855,9 @@
       var otherName = otherRow.querySelector(".formula-name").value.trim();
       if (otherName) result.push({ name: otherName, origin: "calculated" });
     });
+    // Available functions, offered in the same autocomplete as columns.
+    // Listed last so a matching column always outranks them visually.
+    result.push({ name: "CONCATENATE", origin: "function" });
     return result;
   }
 
@@ -1710,6 +1875,8 @@
       if (t.type === "column") { span.className = "formula-pill"; span.textContent = t.value; }
       else if (t.type === "unknown") { span.className = "formula-pill formula-pill--unknown"; span.textContent = t.value; }
       else if (t.type === "number") { span.className = "formula-token-number"; span.textContent = t.value; }
+      else if (t.type === "func") { span.className = "formula-pill formula-pill--func"; span.textContent = t.value; }
+      else if (t.type === "string") { span.className = "formula-token-string"; span.textContent = '"' + t.value + '"'; }
       else { span.className = "formula-token-op"; span.textContent = t.value; }
       previewEl.appendChild(span);
     });
@@ -1764,6 +1931,7 @@
         var item = document.createElement("div");
         item.className = "formula-autocomplete-item" + (idx === 0 ? " formula-autocomplete-item--active" : "");
         item.dataset.name = c.name;
+        item.dataset.origin = c.origin;
         var nameSpan = document.createElement("span");
         nameSpan.className = "formula-autocomplete-name";
         nameSpan.textContent = c.name;
@@ -1777,12 +1945,16 @@
       dropdown.hidden = false;
     }
 
-    function acceptSuggestion(name) {
+    function acceptSuggestion(name, origin) {
       var bounds = operandBounds();
       var before = input.value.slice(0, bounds.start);
       var after = input.value.slice(bounds.end);
-      input.value = before + name + " " + after;
-      var newPos = (before + name + " ").length;
+      // Accepting a function inserts its opening parenthesis and leaves the
+      // caret inside it, ready for the first argument; a column just
+      // inserts its name plus a trailing space as before.
+      var inserted = origin === "function" ? name + "(" : name + " ";
+      input.value = before + inserted + after;
+      var newPos = (before + inserted).length;
       input.setSelectionRange(newPos, newPos);
       dropdown.hidden = true;
       refreshFormulaPreview(row);
@@ -1800,7 +1972,7 @@
       if (e.key === "ArrowDown") { e.preventDefault(); activeIndex = Math.min(activeIndex + 1, items.length - 1); setActive(items); }
       else if (e.key === "ArrowUp") { e.preventDefault(); activeIndex = Math.max(activeIndex - 1, 0); setActive(items); }
       else if (e.key === "Enter" || e.key === "Tab") {
-        if (activeIndex >= 0 && items[activeIndex]) { e.preventDefault(); acceptSuggestion(items[activeIndex].dataset.name); }
+        if (activeIndex >= 0 && items[activeIndex]) { e.preventDefault(); acceptSuggestion(items[activeIndex].dataset.name, items[activeIndex].dataset.origin); }
       } else if (e.key === "Escape") {
         dropdown.hidden = true;
       }
@@ -1811,7 +1983,7 @@
     dropdown.addEventListener("mousedown", function (e) {
       e.preventDefault();
       var item = e.target.closest(".formula-autocomplete-item");
-      if (item) acceptSuggestion(item.dataset.name);
+      if (item) acceptSuggestion(item.dataset.name, item.dataset.origin);
     });
     input.addEventListener("blur", function () {
       setTimeout(function () { dropdown.hidden = true; }, 100);
@@ -2078,6 +2250,24 @@
     label.textContent = column;
     content.appendChild(label);
 
+    // Excel-style column delete: hides the column from the preview table
+    // and the exported file only (see getEffectiveExportColumns) — the
+    // stored data keeps it, and the "Deleted from export" bar under the
+    // table restores it with one click.
+    var delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "preview-th-delete";
+    delBtn.title = "Delete \"" + column + "\" from the export (restorable below)";
+    delBtn.textContent = "×";
+    delBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var fresh = getExportDecorationFor(state.selectedReportType);
+      if (fresh.deletedColumns.indexOf(column) === -1) fresh.deletedColumns.push(column);
+      saveExportDecorationFor(state.selectedReportType, fresh);
+      renderPreviewScreen();
+    });
+    content.appendChild(delBtn);
+
     th.appendChild(content);
 
     handle.addEventListener("dragstart", function (e) {
@@ -2247,6 +2437,28 @@
     document.getElementById("chkHeaderBold").checked = decoration.headerBold;
     document.getElementById("colorHeaderFill").value = decoration.headerFillColor ? "#" + decoration.headerFillColor : "#dbe6ff";
     document.getElementById("chkFreezeHeader").checked = decoration.freezeHeader;
+
+    var deletedBar = document.getElementById("previewDeletedBar");
+    deletedBar.innerHTML = "";
+    deletedBar.hidden = decoration.deletedColumns.length === 0;
+    if (decoration.deletedColumns.length) {
+      deletedBar.appendChild(document.createTextNode("Deleted from export: "));
+      decoration.deletedColumns.forEach(function (col, idx) {
+        if (idx > 0) deletedBar.appendChild(document.createTextNode(", "));
+        deletedBar.appendChild(document.createTextNode(col + " "));
+        var restoreBtn = document.createElement("button");
+        restoreBtn.type = "button";
+        restoreBtn.className = "link-btn";
+        restoreBtn.textContent = "(restore)";
+        restoreBtn.addEventListener("click", function () {
+          var fresh = getExportDecorationFor(state.selectedReportType);
+          fresh.deletedColumns = fresh.deletedColumns.filter(function (c) { return c !== col; });
+          saveExportDecorationFor(state.selectedReportType, fresh);
+          renderPreviewScreen();
+        });
+        deletedBar.appendChild(restoreBtn);
+      });
+    }
 
     var colgroup = document.getElementById("previewTableColgroup");
     colgroup.innerHTML = "";
