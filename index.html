@@ -39,6 +39,7 @@
         <input type="text" id="inputCompanyName" placeholder="e.g. Acme Foods Pvt Ltd" autocomplete="off" />
       </label>
       <div class="actions">
+        <button class="btn" id="btnCompanyBack" type="button">Back</button>
         <button class="btn btn--primary" id="btnSaveCompany" type="button">Save &amp; Continue</button>
       </div>
     </div>
@@ -272,18 +273,37 @@
 
       <p class="hint" id="previewExportMsg" hidden></p>
 
+      <div class="decorate-toolbar" id="decorateToolbar">
+        <span class="decorate-toolbar__label">Excel formatting:</span>
+        <label class="decorate-check">
+          <input type="checkbox" id="chkHeaderBold" /> Bold header
+        </label>
+        <label class="decorate-color">
+          Header fill
+          <input type="color" id="colorHeaderFill" value="#dbe6ff" />
+          <button class="link-btn" id="btnHeaderFillClear" type="button">Clear</button>
+        </label>
+        <label class="decorate-check">
+          <input type="checkbox" id="chkFreezeHeader" /> Freeze header row in Excel
+        </label>
+      </div>
+
       <div class="header-row-preview-wrap">
-        <table class="header-row-preview-table">
+        <table class="header-row-preview-table" id="previewTable">
+          <colgroup id="previewTableColgroup"></colgroup>
           <thead>
             <tr id="previewTableHeadRow"></tr>
           </thead>
           <tbody id="previewTableBody"></tbody>
         </table>
       </div>
-      <p class="preview-reorder-hint">Drag ⠿ on column headers to reorder before export</p>
+      <p class="preview-reorder-hint">Drag ⠿ on column headers to reorder, drag the right edge to resize, pick a number format per column.</p>
 
       <div class="actions actions--split">
-        <button class="btn" id="btnPreviewHome" type="button">Back to Home</button>
+        <div class="actions__group">
+          <button class="btn" id="btnPreviewBack" type="button">&larr; Back to Formulas</button>
+          <button class="btn" id="btnPreviewHome" type="button">Back to Home</button>
+        </div>
         <div class="actions__group">
           <button class="btn" id="btnPreviewAddReportType" type="button">Add Another Report Type</button>
           <button class="btn" id="btnPreviewDownload" type="button">Download Excel</button>
@@ -297,7 +317,10 @@
   <section class="screen" id="screen-dashboard">
     <div class="dashboard-wrap">
       <div class="dashboard-topbar">
-        <button class="btn" id="btnDashboardBack" type="button">&larr; Back to Home</button>
+        <div class="actions__group">
+          <button class="btn" id="btnDashboardBackPreview" type="button" hidden>&larr; Back to Preview</button>
+          <button class="btn" id="btnDashboardBack" type="button">&larr; Back to Home</button>
+        </div>
         <div class="dashboard-topbar__title">
           <h2 id="dashboardTitle"></h2>
           <p class="muted" id="dashboardSubtitle"></p>
@@ -350,7 +373,8 @@
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="app.js"></script>
 </body>
