@@ -173,22 +173,26 @@
   }
 
   // The user's drag-to-reorder column order on the Preview screen, saved
-  // per Master Report so it's remembered on export and on returning to the
-  // preview later. This is purely a display/export ordering preference —
-  // it never touches data.columns itself (that array's append order still
-  // drives internal logic like column-mismatch dedup), so a column added by
-  // a later Report Type upload just lands at the end until reordered again.
-  function getColumnOrderFor(masterReportName) {
+  // per Report Type (like sheet/header-row/column-structure preferences
+  // above) rather than per Master Report, so the order sticks the next
+  // time this same Report Type is used — including in a brand new Master
+  // Report — instead of only within the one Master Report it was set on.
+  // This is purely a display/export ordering preference — it never
+  // touches data.columns itself (that array's append order still drives
+  // internal logic like column-mismatch dedup), so a column from another
+  // Report Type merged into the same Master Report (not covered by this
+  // order) just lands at the end until reordered again.
+  function getColumnOrderFor(reportTypeName) {
     var all = loadJSON(STORAGE_KEYS.columnOrder, {});
-    return all[masterReportName] || null;
+    return all[reportTypeName] || null;
   }
-  function saveColumnOrderFor(masterReportName, order) {
+  function saveColumnOrderFor(reportTypeName, order) {
     var all = loadJSON(STORAGE_KEYS.columnOrder, {});
-    all[masterReportName] = order;
+    all[reportTypeName] = order;
     saveJSON(STORAGE_KEYS.columnOrder, all);
   }
-  function getEffectiveExportColumns(masterReportName, dataColumns) {
-    var saved = getColumnOrderFor(masterReportName);
+  function getEffectiveExportColumns(reportTypeName, dataColumns) {
+    var saved = getColumnOrderFor(reportTypeName);
     if (!saved) return dataColumns.slice();
     var ordered = saved.filter(function (c) { return dataColumns.indexOf(c) !== -1; });
     dataColumns.forEach(function (c) { if (ordered.indexOf(c) === -1) ordered.push(c); });
@@ -1968,19 +1972,41 @@
   // column started the drag.
   var previewDraggedColumn = null;
 
+  // The ⠿ handle (not the whole header cell) is what's draggable — same
+  // pattern as the Formula Builder's row drag handle — so the header cell
+  // itself stays free for future use (e.g. click-to-sort) without
+  // conflicting with drag gestures. dragover/drop still listen on the
+  // whole th so dropping anywhere in the column's header cell works, not
+  // just precisely on the handle.
   function makePreviewHeaderDraggable(th, column, headRow) {
-    th.draggable = true;
     th.className = "preview-th-draggable";
     th.dataset.column = column;
+    th.innerHTML = "";
 
-    th.addEventListener("dragstart", function (e) {
+    var content = document.createElement("span");
+    content.className = "preview-th-content";
+
+    var handle = document.createElement("span");
+    handle.className = "preview-th-handle";
+    handle.title = "Drag to reorder";
+    handle.textContent = "⠿";
+    handle.draggable = true;
+    content.appendChild(handle);
+
+    var label = document.createElement("span");
+    label.textContent = column;
+    content.appendChild(label);
+
+    th.appendChild(content);
+
+    handle.addEventListener("dragstart", function (e) {
       previewDraggedColumn = column;
       th.classList.add("preview-th--dragging");
       e.dataTransfer.effectAllowed = "move";
       // Firefox requires setData to be called for the drag to start at all.
       e.dataTransfer.setData("text/plain", column);
     });
-    th.addEventListener("dragend", function () {
+    handle.addEventListener("dragend", function () {
       th.classList.remove("preview-th--dragging");
       headRow.querySelectorAll(".preview-th--drag-over").forEach(function (el) {
         el.classList.remove("preview-th--drag-over");
@@ -2002,13 +2028,13 @@
       if (!previewDraggedColumn || previewDraggedColumn === column) return;
 
       var data = getMasterReportData(state.selectedMasterReport);
-      var currentOrder = getEffectiveExportColumns(state.selectedMasterReport, data.columns);
+      var currentOrder = getEffectiveExportColumns(state.selectedReportType, data.columns);
       var fromIdx = currentOrder.indexOf(previewDraggedColumn);
       var toIdx = currentOrder.indexOf(column);
       if (fromIdx === -1 || toIdx === -1) return;
       currentOrder.splice(fromIdx, 1);
       currentOrder.splice(toIdx, 0, previewDraggedColumn);
-      saveColumnOrderFor(state.selectedMasterReport, currentOrder);
+      saveColumnOrderFor(state.selectedReportType, currentOrder);
       renderPreviewScreen();
     });
   }
@@ -2016,7 +2042,7 @@
   function renderPreviewScreen() {
     var data = getMasterReportData(state.selectedMasterReport);
     var mr = getMasterReport(state.selectedMasterReport);
-    var exportColumns = data ? getEffectiveExportColumns(state.selectedMasterReport, data.columns) : [];
+    var exportColumns = data ? getEffectiveExportColumns(state.selectedReportType, data.columns) : [];
 
     document.getElementById("previewMasterReportName").textContent = state.selectedMasterReport;
     document.getElementById("previewMeta").textContent =
@@ -2040,7 +2066,6 @@
     headRow.appendChild(thSno);
     exportColumns.forEach(function (c) {
       var th = document.createElement("th");
-      th.textContent = c;
       makePreviewHeaderDraggable(th, c, headRow);
       headRow.appendChild(th);
     });
@@ -2102,7 +2127,7 @@
       return false;
     }
 
-    var exportColumns = getEffectiveExportColumns(state.selectedMasterReport, data.columns); // __saiDate is bookkeeping-only, never exported
+    var exportColumns = getEffectiveExportColumns(state.selectedReportType, data.columns); // __saiDate is bookkeeping-only, never exported
     var todayText = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 
     var aoa = [];
