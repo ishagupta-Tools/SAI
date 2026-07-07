@@ -285,8 +285,53 @@
         <button class="btn" id="btnPreviewHome" type="button">Back to Home</button>
         <div class="actions__group">
           <button class="btn" id="btnPreviewAddReportType" type="button">Add Another Report Type</button>
-          <button class="btn btn--primary" id="btnPreviewGenerate" type="button">Generate Master Report</button>
+          <button class="btn" id="btnPreviewDownload" type="button">Download Excel</button>
+          <button class="btn btn--primary" id="btnPreviewDownloadAnalyse" type="button">Download &amp; Analyse &rarr;</button>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ANALYSIS DASHBOARD -->
+  <section class="screen" id="screen-dashboard">
+    <div class="dashboard-wrap">
+      <div class="dashboard-topbar">
+        <button class="btn" id="btnDashboardBack" type="button">&larr; Back to Home</button>
+        <div class="dashboard-topbar__title">
+          <h2 id="dashboardTitle"></h2>
+          <p class="muted" id="dashboardSubtitle"></p>
+        </div>
+        <button class="btn btn--primary" id="btnDashboardPdf" type="button">Download Analysis as PDF</button>
+      </div>
+
+      <div class="dashboard-kpi-row" id="dashboardKpiRow"></div>
+
+      <h3 class="dashboard-section-title">Auto Analysis</h3>
+      <div class="dashboard-charts-grid" id="dashboardChartsGrid"></div>
+
+      <div class="dashboard-custom-section">
+        <div class="dashboard-custom-section__header">
+          <h3 class="dashboard-section-title">Custom Analysis</h3>
+          <button class="btn" id="btnCustomiseAnalysis" type="button">+ Customise Your Analysis</button>
+        </div>
+
+        <div class="dashboard-custom-panel" id="dashboardCustomPanel" hidden>
+          <p class="muted">Pick the columns you want to analyse. SAI will try to detect what kind of chart fits best.</p>
+          <div class="dashboard-column-checklist" id="dashboardColumnChecklist"></div>
+          <p class="error" id="dashboardCustomError" hidden></p>
+          <div class="actions">
+            <button class="btn" id="btnCustomAnalysisCancel" type="button">Cancel</button>
+            <button class="btn btn--primary" id="btnCustomAnalysisApply" type="button">Add to Dashboard</button>
+          </div>
+        </div>
+
+        <p class="empty-state" id="dashboardCustomEmptyState" hidden>No custom charts yet — click "+ Customise Your Analysis" to add one.</p>
+        <div class="dashboard-charts-grid" id="dashboardCustomChartsGrid"></div>
+      </div>
+
+      <div class="dashboard-insights-card" id="dashboardInsightsCard">
+        <h3>Key Insights</h3>
+        <ul class="dashboard-insights-list" id="dashboardInsightsList"></ul>
       </div>
     </div>
   </section>
@@ -305,6 +350,7 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
