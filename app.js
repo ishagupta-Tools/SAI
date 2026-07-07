@@ -325,6 +325,7 @@
     if (!topbar.hidden) {
       document.getElementById("topbarCompany").textContent = state.companyName ? "🏢 " + state.companyName : "";
     }
+    if (id === "screen-upload") renderUploadExistingFile();
     window.scrollTo(0, 0);
   }
 
@@ -351,6 +352,9 @@
   var dropzoneFilename = document.getElementById("dropzoneFilename");
   var uploadError = document.getElementById("uploadError");
   var btnUploadContinue = document.getElementById("btnUploadContinue");
+  var uploadExistingWrap = document.getElementById("uploadExistingWrap");
+  var uploadExistingFilename = document.getElementById("uploadExistingFilename");
+  var btnUploadNext = document.getElementById("btnUploadNext");
 
   var currentWorkbook = null;
   var currentFileHeaders = [];
@@ -384,6 +388,7 @@
     currentFileHeaders = [];
     currentFileRows = [];
     btnUploadContinue.disabled = true;
+    renderUploadExistingFile();
 
     if (!/\.(csv|xlsx|xls)$/i.test(file.name)) {
       showUploadError("Unsupported file type. Please upload a .csv, .xlsx or .xls file.");
@@ -409,6 +414,7 @@
         console.log("[SAI] Workbook \"" + file.name + "\" parsed with " + workbook.SheetNames.length + " sheet(s):", workbook.SheetNames);
 
         btnUploadContinue.disabled = false;
+        renderUploadExistingFile();
       } catch (err) {
         showUploadError("Could not read this file: " + err.message);
       }
@@ -716,19 +722,34 @@
 
   /* ---------------------------------------------------------------------
    * Screen: Upload
+   *
+   * A file already read into memory this session (currentWorkbook, set by
+   * readUploadedFile and cleared only by resetFileState) is surfaced at the
+   * top of the screen with a Next button, so returning to this screen (e.g.
+   * via a Back button) doesn't force a re-upload the user doesn't need. The
+   * dropzone below remains fully usable if they want to swap the file.
    * ------------------------------------------------------------------- */
+  function renderUploadExistingFile() {
+    var hasFile = !!(currentWorkbook && state.fileName);
+    uploadExistingWrap.hidden = !hasFile;
+    uploadExistingFilename.textContent = hasFile ? state.fileName : "";
+  }
+
   document.getElementById("btnUploadBack").addEventListener("click", function () {
     renderMasterReportScreen(!!state.selectedMasterReport);
     showScreen("screen-master-report");
   });
 
-  btnUploadContinue.addEventListener("click", function () {
+  function handleUploadContinue() {
     if (isDuplicateFileUpload(state.selectedMasterReport, state.fileName, state.fileSize)) {
       var proceedAnyway = window.confirm("This file looks like it was already uploaded (same name & size). Add it again?");
       if (!proceedAnyway) return;
     }
     proceedPastUploadScreen();
-  });
+  }
+
+  btnUploadContinue.addEventListener("click", handleUploadContinue);
+  btnUploadNext.addEventListener("click", handleUploadContinue);
 
   /* ---------------------------------------------------------------------
    * Screen: Master Report / Report Type
