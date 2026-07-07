@@ -1673,7 +1673,11 @@
       var bounds = operandBounds();
       var partial = input.value.slice(bounds.start, bounds.pos).trim().toLowerCase();
       var available = getAvailableColumnsForFormulaRow(row);
-      var matches = available.filter(function (c) { return !partial || c.name.toLowerCase().indexOf(partial) !== -1; }).slice(0, 8);
+      // No cap here — every selected/renamed source column and every other
+      // in-progress formula name must stay reachable (the dropdown already
+      // scrolls via max-height in CSS), otherwise columns past whatever
+      // limit is picked here silently become impossible to reference.
+      var matches = available.filter(function (c) { return !partial || c.name.toLowerCase().indexOf(partial) !== -1; });
 
       dropdown.innerHTML = "";
       if (!matches.length) { dropdown.hidden = true; return; }
