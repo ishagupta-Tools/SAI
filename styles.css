@@ -684,14 +684,30 @@ html, body {
    bleeds onto the (non-draggable) Header Row Selection screen that reuses
    the same table classes. */
 #previewTableHeadRow th.preview-th-draggable {
-  cursor: grab;
   user-select: none;
 }
-#previewTableHeadRow th.preview-th-draggable:active { cursor: grabbing; }
 #previewTableHeadRow th.preview-th--dragging { opacity: 0.4; }
 #previewTableHeadRow th.preview-th--drag-over {
   background: #dbe6ff;
   box-shadow: inset 2px 0 0 var(--color-primary), inset -2px 0 0 var(--color-primary);
+}
+.preview-th-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.preview-th-handle {
+  cursor: grab;
+  color: var(--color-muted);
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+}
+.preview-th-handle:active { cursor: grabbing; }
+.preview-reorder-hint {
+  font-size: 12px;
+  color: var(--color-muted);
+  margin: 10px 0 0;
 }
 
 /* Analysis Dashboard */
