@@ -164,6 +164,29 @@
     </div>
   </section>
 
+  <!-- DATA MODE CHOICE -->
+  <section class="screen" id="screen-data-mode">
+    <div class="card">
+      <h2>Existing data for this Report Type</h2>
+      <p class="muted" id="dataModeMessage"></p>
+
+      <div class="data-mode-options">
+        <button class="data-mode-option" id="btnDataModeReplace" type="button">
+          <span class="data-mode-option__title">Replace existing data</span>
+          <span class="data-mode-option__desc">Remove the previously stored rows for this Report Type and use only this new file's data.</span>
+        </button>
+        <button class="data-mode-option" id="btnDataModeAdd" type="button">
+          <span class="data-mode-option__title">Add to existing data</span>
+          <span class="data-mode-option__desc">Keep the previously stored rows and append this new file's rows to them.</span>
+        </button>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btnDataModeBack" type="button">Back</button>
+      </div>
+    </div>
+  </section>
+
   <!-- COLUMN SELECTION -->
   <section class="screen" id="screen-columns">
     <div class="card card--wide">
@@ -285,4 +308,3 @@
 <script src="app.js"></script>
 </body>
 </html>
-
