@@ -710,6 +710,70 @@ html, body {
   margin: 10px 0 0;
 }
 
+/* Excel decoration toolbar */
+.decorate-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: #fafbfd;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.decorate-toolbar__label { font-weight: 600; color: var(--color-muted); }
+.decorate-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.decorate-color { display: flex; align-items: center; gap: 6px; }
+.decorate-color input[type="color"] {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Preview table column resize + per-column number format, scoped by ID
+   (see the drag-reorder comment above) so it never bleeds onto the shared
+   .header-row-preview-table used by the Header Row Selection screen. */
+#previewTable { table-layout: fixed; }
+#previewTable col { width: 140px; }
+#previewTable td,
+#previewTable th { overflow: hidden; text-overflow: ellipsis; }
+#previewTableHeadRow th.preview-th-draggable {
+  position: relative;
+  padding-right: 14px;
+}
+.preview-th-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  user-select: none;
+}
+.preview-th-resizer:hover,
+.preview-th-resizer--active {
+  background: var(--color-primary);
+  opacity: 0.35;
+}
+.preview-th-numfmt {
+  margin-top: 6px;
+  width: 100%;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+  color: var(--color-text);
+  padding: 2px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
 /* Analysis Dashboard */
 .dashboard-wrap { width: 100%; max-width: 1120px; }
 
