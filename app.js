@@ -1013,22 +1013,42 @@
   var columnsTableBody = document.getElementById("columnsTableBody");
   var columnsMismatchBanner = document.getElementById("columnsMismatchBanner");
   var columnsMismatchText = document.getElementById("columnsMismatchText");
+  var columnsAutofillNote = document.getElementById("columnsAutofillNote");
+
+  // Case-insensitive lookup of a saved column-structure entry for a given
+  // current-file header — the same file re-exported later can vary in
+  // header casing, so matching "Order ID" against a saved "order id"
+  // should still count as the same column.
+  function findSavedStructureEntry(savedStructure, header) {
+    if (!savedStructure) return null;
+    var lowerHeader = header.toLowerCase();
+    var key = Object.keys(savedStructure).find(function (k) { return k.toLowerCase() === lowerHeader; });
+    return key ? savedStructure[key] : null;
+  }
 
   function renderColumnScreen() {
     document.getElementById("columnsReportType").textContent = state.selectedReportType;
-    document.getElementById("columnsAutofillNote").hidden = true;
+    columnsAutofillNote.hidden = true;
     columnsMismatchBanner.hidden = true;
 
     console.log("[SAI] Rendering column screen from currentFileHeaders:", currentFileHeaders);
 
-    // Column-mismatch check: this only reads the saved header *keys* to
-    // diff against the current file, purely informational — it never
-    // feeds the per-row defaults built below.
+    // The saved column structure for this Report Type (see
+    // saveColumnStructureFor, written every time btnColumnsNext runs) is
+    // what lets a returning upload skip remapping from scratch — every
+    // row built below defaults from it (see findSavedStructureEntry)
+    // instead of always defaulting to include=true/renameTo=header.
     var savedStructure = getColumnStructureFor(state.selectedReportType);
+
     if (savedStructure) {
+      columnsAutofillNote.textContent = "Saved mapping loaded for " + state.selectedReportType + " — review and confirm below.";
+      columnsAutofillNote.hidden = false;
+
       var savedKeys = Object.keys(savedStructure);
-      var missing = savedKeys.filter(function (h) { return currentFileHeaders.indexOf(h) === -1; });
-      var added = currentFileHeaders.filter(function (h) { return savedKeys.indexOf(h) === -1; });
+      var lowerCurrentHeaders = currentFileHeaders.map(function (h) { return h.toLowerCase(); });
+      var lowerSavedKeys = savedKeys.map(function (h) { return h.toLowerCase(); });
+      var missing = savedKeys.filter(function (h) { return lowerCurrentHeaders.indexOf(h.toLowerCase()) === -1; });
+      var added = currentFileHeaders.filter(function (h) { return lowerSavedKeys.indexOf(h.toLowerCase()) === -1; });
       if (missing.length || added.length) {
         var parts = [];
         if (missing.length) parts.push("missing: " + missing.join(", "));
@@ -1051,15 +1071,18 @@
     var masterColumns = masterData ? masterData.columns.filter(function (c) { return c !== "Report Type"; }) : [];
 
     columnsTableBody.innerHTML = "";
-    // This screen must show exactly the file's own headers and nothing else.
-    // Every row is built solely from currentFileHeaders (set by
-    // extractHeadersAndRows() once the sheet + header row are chosen) with
-    // include=true and renameTo=header as the only defaults — localStorage
-    // is never read here for prefilling, so a value saved in a previous
-    // session can never resurface as if it came from the current file.
+    // This screen must show exactly the file's own headers and nothing
+    // else. Every row is built solely from currentFileHeaders (set by
+    // extractHeadersAndRows() once the sheet + header row are chosen), but
+    // each row's include/renameTo now defaults from the saved structure
+    // for this header (see findSavedStructureEntry) when one exists,
+    // falling back to include=true/renameTo=header for a header that
+    // isn't in the saved mapping (flagged below as "New column").
     currentFileHeaders.forEach(function (header) {
-      var include = true;
-      var renameTo = header;
+      var savedEntry = findSavedStructureEntry(savedStructure, header);
+      var include = savedEntry ? savedEntry.include : true;
+      var renameTo = savedEntry ? savedEntry.renameTo : header;
+      var isNewHeader = !!savedStructure && !savedEntry;
 
       var tr = document.createElement("tr");
       tr.dataset.header = header;
@@ -1075,11 +1098,17 @@
 
       var tdOrig = document.createElement("td");
       tdOrig.textContent = header;
+      if (isNewHeader) {
+        var newTag = document.createElement("span");
+        newTag.className = "chip column-tag";
+        newTag.textContent = "New column";
+        tdOrig.appendChild(newTag);
+      }
       tr.appendChild(tdOrig);
 
       var tdRename = document.createElement("td");
       if (masterColumns.length) {
-        var existingMatch = masterColumns.find(function (c) { return c.toLowerCase() === header.toLowerCase(); });
+        var existingMatch = masterColumns.find(function (c) { return c.toLowerCase() === renameTo.toLowerCase(); });
 
         var renameSelect = document.createElement("select");
         renameSelect.className = "column-rename-select";
@@ -1165,11 +1194,15 @@
     return plainInput.value.trim() || header;
   }
 
-  // Any column already standardised on this Master Report that the current
-  // file doesn't map onto (because it has no matching/included header) is
-  // offered here so the user can fill every row of THIS file with one
-  // default value instead of leaving the column blank for it. Recomputed
-  // live whenever the include checkboxes or rename choices change, while
+  // Any column expected for this upload that the current file doesn't map
+  // onto (because it has no matching/included header) is offered here so
+  // the user can fill every row of THIS file with one default value
+  // instead of leaving the column blank for it. "Expected" covers two
+  // sources: columns already standardised on this Master Report (from an
+  // earlier Report Type merged into it), and columns this same Report
+  // Type's own saved structure had included last time but that aren't
+  // present in this file (see findSavedStructureEntry). Recomputed live
+  // whenever the include checkboxes or rename choices change, while
   // preserving whatever the user already typed for a column that's still
   // missing after the recompute.
   function updateMissingColumnsSection() {
@@ -1180,7 +1213,19 @@
     var masterData = getMasterReportData(state.selectedMasterReport);
     var masterColumns = masterData ? masterData.columns.filter(function (c) { return c !== "Report Type"; }) : [];
 
-    if (!masterColumns.length) {
+    var savedStructure = getColumnStructureFor(state.selectedReportType);
+    var expectedColumns = masterColumns.slice();
+    if (savedStructure) {
+      var lowerCurrentHeaders = currentFileHeaders.map(function (h) { return h.toLowerCase(); });
+      Object.keys(savedStructure).forEach(function (origHeader) {
+        var entry = savedStructure[origHeader];
+        if (!entry.include) return;
+        if (lowerCurrentHeaders.indexOf(origHeader.toLowerCase()) !== -1) return;
+        if (expectedColumns.indexOf(entry.renameTo) === -1) expectedColumns.push(entry.renameTo);
+      });
+    }
+
+    if (!expectedColumns.length) {
       wrap.hidden = true;
       list.innerHTML = "";
       return;
@@ -1198,11 +1243,11 @@
       covered.push(getRenameToForRow(tr, tr.dataset.header).toLowerCase());
     });
 
-    var missing = masterColumns.filter(function (c) { return covered.indexOf(c.toLowerCase()) === -1; });
+    var missing = expectedColumns.filter(function (c) { return covered.indexOf(c.toLowerCase()) === -1; });
 
     wrap.hidden = missing.length === 0;
     list.innerHTML = "";
-    hint.textContent = "These columns exist in \"" + state.selectedMasterReport + "\" but weren't found in this file. Enter a value to fill every row of this file, or leave blank.";
+    hint.textContent = "These columns aren't in this file. Enter a value to fill every row of this file, or leave blank.";
 
     missing.forEach(function (col) {
       var row = document.createElement("div");
