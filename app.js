@@ -200,8 +200,25 @@
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
 
-  function mergeReportTypeDataIntoMasterReport(masterReportName, reportTypeName, finalColumns, rows, fileMeta, dateColumnKey) {
+  // How many rows already stored for this Master Report belong to this
+  // Report Type — surfaced on the data-mode choice screen so the user
+  // knows what "Replace" would remove and what "Add" would build on top of.
+  function getReportTypeRowCount(masterReportName, reportTypeName) {
+    var data = getMasterReportData(masterReportName);
+    if (!data || !data.rows) return 0;
+    return data.rows.filter(function (r) { return r["Report Type"] === reportTypeName; }).length;
+  }
+
+  // mode "replace" drops every row already stored for this Report Type
+  // before merging the new ones in, so re-uploading a corrected file
+  // doesn't pile its rows on top of the old ones; mode "add" (the
+  // long-standing default) keeps prior rows and appends.
+  function mergeReportTypeDataIntoMasterReport(masterReportName, reportTypeName, finalColumns, rows, fileMeta, dateColumnKey, mode) {
     var data = getMasterReportData(masterReportName) || { columns: ["Report Type"], rows: [], uploadedFiles: [], lastUpdated: null };
+
+    if (mode === "replace") {
+      data.rows = data.rows.filter(function (r) { return r["Report Type"] !== reportTypeName; });
+    }
 
     finalColumns.forEach(function (c) {
       if (data.columns.indexOf(c) === -1) data.columns.push(c);
@@ -310,7 +327,8 @@
     selectedSheetName: "",
     selectedHeaderRowIndex: 0,
     selectedColumns: [],
-    selectedDateColumnHeader: "" // renamed key of the marked date column, "" = none
+    selectedDateColumnHeader: "", // renamed key of the marked date column, "" = none
+    dataMode: "" // "replace" or "add" — how this upload's rows join any rows already stored for this Report Type
   };
 
   /* ---------------------------------------------------------------------
@@ -511,6 +529,7 @@
     state.selectedHeaderRowIndex = 0;
     state.selectedColumns = [];
     state.selectedDateColumnHeader = "";
+    state.dataMode = "";
     currentWorkbook = null;
     currentFileHeaders = [];
     currentFileRows = [];
@@ -1000,11 +1019,51 @@
         currentFileHeaders: currentFileHeaders,
         currentFileRows: currentFileRows
       });
-      renderColumnScreen();
-      showScreen("screen-columns");
+      proceedToDataModeOrColumns();
     } catch (err) {
       alert("Could not read headers: " + err.message);
     }
+  });
+
+  /* ---------------------------------------------------------------------
+   * Screen: Data mode choice (Replace vs Add)
+   *
+   * Shown once per fresh upload, right after headers are extracted and
+   * before column mapping, whenever this Report Type already has rows
+   * stored in the Master Report — otherwise mergeReportTypeDataIntoMasterReport
+   * (called at the end of the Formula screen) always appended, which is
+   * what caused repeat uploads of the same Report Type to pile rows on
+   * top of each other with no way to start over. Skipped entirely when
+   * there's nothing stored yet, since there's no real choice to make.
+   * ------------------------------------------------------------------- */
+  var dataModeMessage = document.getElementById("dataModeMessage");
+
+  function proceedToDataModeOrColumns() {
+    var existingCount = getReportTypeRowCount(state.selectedMasterReport, state.selectedReportType);
+    if (existingCount > 0) {
+      dataModeMessage.textContent = "\"" + state.selectedReportType + "\" currently has " + existingCount +
+        " row" + (existingCount === 1 ? "" : "s") + " from your last upload. What would you like to do with this new file?";
+      showScreen("screen-data-mode");
+    } else {
+      state.dataMode = "add";
+      renderColumnScreen();
+      showScreen("screen-columns");
+    }
+  }
+
+  document.getElementById("btnDataModeReplace").addEventListener("click", function () {
+    state.dataMode = "replace";
+    renderColumnScreen();
+    showScreen("screen-columns");
+  });
+  document.getElementById("btnDataModeAdd").addEventListener("click", function () {
+    state.dataMode = "add";
+    renderColumnScreen();
+    showScreen("screen-columns");
+  });
+  document.getElementById("btnDataModeBack").addEventListener("click", function () {
+    renderHeaderRowScreen();
+    showScreen("screen-header-row");
   });
 
   /* ---------------------------------------------------------------------
@@ -1857,7 +1916,8 @@
       state.selectedColumns.concat(formulaColumnNames),
       currentRenamedRows,
       { name: state.fileName, size: state.fileSize },
-      state.selectedDateColumnHeader
+      state.selectedDateColumnHeader,
+      state.dataMode || "add"
     );
     clearSetupProgress(state.selectedMasterReport, state.selectedReportType);
 
