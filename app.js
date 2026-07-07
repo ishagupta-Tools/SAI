@@ -1315,6 +1315,17 @@
       });
     }
 
+    // A column produced by one of this Report Type's own saved formulas
+    // (Formula Builder, run right after this screen) is never a genuine
+    // source column — it's computed fresh every time this Report Type's
+    // formulas run, so it must never be offered here asking for a default
+    // value, even though it lingers in masterColumns from a past merge.
+    // Scoped to THIS Report Type only: a formula column from a DIFFERENT
+    // Report Type already merged into the same Master Report still won't
+    // be produced by this upload, so it correctly stays flagged as missing.
+    var formulaNames = getFormulasFor(state.selectedReportType).map(function (f) { return f.name.toLowerCase(); });
+    expectedColumns = expectedColumns.filter(function (c) { return formulaNames.indexOf(c.toLowerCase()) === -1; });
+
     if (!expectedColumns.length) {
       wrap.hidden = true;
       list.innerHTML = "";
