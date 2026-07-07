@@ -16,7 +16,8 @@
     masterReportData: "sai_master_report_data",
     setupProgress: "sai_setup_progress",
     columnOrder: "sai_column_order",
-    dashboardCustom: "sai_dashboard_custom"
+    dashboardCustom: "sai_dashboard_custom",
+    exportDecoration: "sai_export_decoration"
   };
 
   function loadJSON(key, fallback) {
@@ -199,6 +200,34 @@
     return ordered;
   }
 
+  // Excel export "decoration" (column widths, header bold/fill, per-column
+  // number format, freeze header row) is purely cosmetic formatting of the
+  // downloaded file — it never touches data.rows/data.columns — and is
+  // saved per Report Type, same pattern as column order above, so it's
+  // remembered next time this Report Type is exported (including in a
+  // brand new Master Report). columnWidths/numberFormats are keyed by
+  // column name, using the reserved key EXPORT_SNO_KEY for the S.No.
+  // column so a real column literally named "S.No." can't collide with it.
+  var EXPORT_SNO_KEY = "__sai_sno__";
+
+  function getExportDecorationFor(reportTypeName) {
+    var all = loadJSON(STORAGE_KEYS.exportDecoration, {});
+    var saved = all[reportTypeName];
+    if (!saved) return { columnWidths: {}, headerBold: false, headerFillColor: "", numberFormats: {}, freezeHeader: false };
+    return {
+      columnWidths: saved.columnWidths || {},
+      headerBold: !!saved.headerBold,
+      headerFillColor: saved.headerFillColor || "",
+      numberFormats: saved.numberFormats || {},
+      freezeHeader: !!saved.freezeHeader
+    };
+  }
+  function saveExportDecorationFor(reportTypeName, decoration) {
+    var all = loadJSON(STORAGE_KEYS.exportDecoration, {});
+    all[reportTypeName] = decoration;
+    saveJSON(STORAGE_KEYS.exportDecoration, all);
+  }
+
   // The Analysis Dashboard's Custom Analysis picks (Layer 2) are saved per
   // Master Report — which columns the user chose to chart, plus any typed
   // explanation for a column SAI couldn't confidently type on its own —
@@ -353,7 +382,23 @@
 
   /* ---------------------------------------------------------------------
    * Screen navigation
+   *
+   * A few screens are reachable from more than one place in the flow, so
+   * the "go back one step" button on them needs to know where "one step
+   * back" actually points this time rather than a single hardcoded target:
+   *   - companyReturnScreen: where btnCompanyBack returns to — the landing
+   *     screen on first-run setup, or whichever screen "Edit company" (in
+   *     the topbar, visible on every screen) was clicked from.
+   *   - dashboardEntryScreen: whether the Dashboard was opened from the
+   *     Preview screen (via Download & Analyse) or straight from a Home
+   *     card's "Analyse" button — btnDashboardBackPreview only makes sense
+   *     (and is only shown) in the former case.
+   * Both are set right before the showScreen() call that navigates TO the
+   * screen in question, at every place that does so.
    * ------------------------------------------------------------------- */
+  var companyReturnScreen = "screen-landing";
+  var dashboardEntryScreen = "screen-home";
+
   function showScreen(id) {
     document.querySelectorAll(".screen").forEach(function (el) {
       el.classList.toggle("screen--active", el.id === id);
@@ -399,6 +444,15 @@
   var currentFileRows = [];
   var currentRenamedRows = [];
   var cameFromSheetScreen = false;
+
+  // Snapshot of the Master Report's data + registry entry taken immediately
+  // before the Formula screen's Next button merges this upload's rows in —
+  // lets the Preview screen's "Back to Formulas" button restore this exact
+  // pre-merge state before returning, so re-clicking Next (with or without
+  // formula edits) performs one clean merge instead of appending duplicate
+  // rows on top of the ones already merged. Only applied if the context
+  // (same Master Report + Report Type) still matches when Back is clicked.
+  var preMergeSnapshot = null;
 
   dropzone.addEventListener("click", function () { fileInput.click(); });
   dropzone.addEventListener("dragover", function (e) { e.preventDefault(); dropzone.classList.add("dropzone--drag"); });
@@ -515,6 +569,7 @@
   document.getElementById("btnGetStarted").addEventListener("click", function () {
     state.companyName = getCompanyName();
     if (!state.companyName) {
+      companyReturnScreen = "screen-landing";
       showScreen("screen-company");
     } else {
       renderHomeScreen();
@@ -537,7 +592,14 @@
     renderHomeScreen();
     showScreen("screen-home");
   });
+  document.getElementById("btnCompanyBack").addEventListener("click", function () {
+    showScreen(companyReturnScreen || "screen-home");
+  });
   document.getElementById("btnEditCompany").addEventListener("click", function () {
+    // Captured before switching screens, since the topbar (and therefore
+    // this button) is reachable from every screen except Landing.
+    var active = document.querySelector(".screen--active");
+    companyReturnScreen = active ? active.id : "screen-home";
     inputCompanyName.value = state.companyName || getCompanyName();
     showScreen("screen-company");
   });
@@ -761,6 +823,7 @@
         analyseBtn.className = "btn";
         analyseBtn.textContent = "Analyse";
         analyseBtn.addEventListener("click", function () {
+          dashboardEntryScreen = "screen-home";
           openDashboardFor(mr.name);
         });
         card.appendChild(analyseBtn);
@@ -1956,6 +2019,13 @@
 
     var formulaColumnNames = formulas.map(function (f) { return f.name; });
 
+    preMergeSnapshot = {
+      masterReportName: state.selectedMasterReport,
+      reportTypeName: state.selectedReportType,
+      data: JSON.parse(JSON.stringify(getMasterReportData(state.selectedMasterReport))),
+      registry: JSON.parse(JSON.stringify(getMasterReports()))
+    };
+
     mergeReportTypeDataIntoMasterReport(
       state.selectedMasterReport,
       state.selectedReportType,
@@ -2050,10 +2120,114 @@
     });
   }
 
+  // Drag-resizes a <col> element (which is what actually controls the
+  // rendered width under table-layout:fixed) from a resizer handle placed
+  // on its <th>. Persists to this Report Type's saved decoration on
+  // mouseup only (not on every mousemove) — re-reading the saved
+  // decoration fresh at that point rather than closing over the one read
+  // at render time, so a resize started before another decoration control
+  // was changed doesn't clobber it.
+  function attachColumnResizer(th, col, widthKey) {
+    var resizer = document.createElement("span");
+    resizer.className = "preview-th-resizer";
+    resizer.title = "Drag to resize column";
+    th.appendChild(resizer);
+
+    resizer.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var startX = e.clientX;
+      // Read the <th>'s own rendered width rather than the <col>'s —
+      // getBoundingClientRect() on a <col> element is unreliable across
+      // browsers, even though setting col.style.width below (which is what
+      // actually drives table-layout:fixed column sizing) is well-supported.
+      var startWidth = th.getBoundingClientRect().width;
+      resizer.classList.add("preview-th-resizer--active");
+
+      function onMove(ev) {
+        var newWidth = Math.max(50, Math.round(startWidth + (ev.clientX - startX)));
+        col.style.width = newWidth + "px";
+      }
+      function onUp() {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        resizer.classList.remove("preview-th-resizer--active");
+        var fresh = getExportDecorationFor(state.selectedReportType);
+        fresh.columnWidths[widthKey] = parseInt(col.style.width, 10);
+        saveExportDecorationFor(state.selectedReportType, fresh);
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
+  // A small per-column number-format picker, shown only for columns whose
+  // own values classify as numeric (same classifyColumn heuristic the
+  // Analysis Dashboard uses) — applied to the exported Excel cells only,
+  // never displayed/converted in this on-screen preview table.
+  var NUMBER_FORMAT_OPTIONS = [
+    ["plain", "Number"],
+    ["currency", "Currency (₹)"],
+    ["percentage", "Percentage"],
+    ["decimal2", "2 decimals"]
+  ];
+  function attachNumberFormatSelect(th, column, data, decoration) {
+    if (!data || !data.rows.length || classifyColumn(data.rows, column).type !== "numeric") return;
+
+    var select = document.createElement("select");
+    select.className = "preview-th-numfmt";
+    select.title = "Number format for \"" + column + "\" in the exported Excel";
+    NUMBER_FORMAT_OPTIONS.forEach(function (opt) {
+      var o = document.createElement("option");
+      o.value = opt[0];
+      o.textContent = opt[1];
+      select.appendChild(o);
+    });
+    select.value = decoration.numberFormats[column] || "plain";
+    // Keep the dropdown from also triggering the header's own drag/reorder
+    // gesture handling on the same th.
+    select.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+    select.addEventListener("click", function (e) { e.stopPropagation(); });
+    select.addEventListener("change", function () {
+      var fresh = getExportDecorationFor(state.selectedReportType);
+      if (select.value === "plain") delete fresh.numberFormats[column];
+      else fresh.numberFormats[column] = select.value;
+      saveExportDecorationFor(state.selectedReportType, fresh);
+    });
+    th.appendChild(select);
+  }
+
+  // The three scalar decoration toggles (bold, fill colour, freeze) are
+  // wired once here rather than re-attached on every renderPreviewScreen()
+  // call — renderPreviewScreen only ever sets their current *value* to
+  // match the saved decoration for whichever Report Type is now active.
+  document.getElementById("chkHeaderBold").addEventListener("change", function (e) {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.headerBold = e.target.checked;
+    saveExportDecorationFor(state.selectedReportType, fresh);
+  });
+  document.getElementById("colorHeaderFill").addEventListener("input", function (e) {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.headerFillColor = e.target.value.replace(/^#/, "").toUpperCase();
+    saveExportDecorationFor(state.selectedReportType, fresh);
+  });
+  document.getElementById("btnHeaderFillClear").addEventListener("click", function () {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.headerFillColor = "";
+    saveExportDecorationFor(state.selectedReportType, fresh);
+    document.getElementById("colorHeaderFill").value = "#dbe6ff";
+  });
+  document.getElementById("chkFreezeHeader").addEventListener("change", function (e) {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.freezeHeader = e.target.checked;
+    saveExportDecorationFor(state.selectedReportType, fresh);
+  });
+
   function renderPreviewScreen() {
     var data = getMasterReportData(state.selectedMasterReport);
     var mr = getMasterReport(state.selectedMasterReport);
     var exportColumns = data ? getEffectiveExportColumns(state.selectedReportType, data.columns) : [];
+    var decoration = getExportDecorationFor(state.selectedReportType);
 
     document.getElementById("previewMasterReportName").textContent = state.selectedMasterReport;
     document.getElementById("previewMeta").textContent =
@@ -2070,15 +2244,34 @@
 
     document.getElementById("previewExportMsg").hidden = true;
 
+    document.getElementById("chkHeaderBold").checked = decoration.headerBold;
+    document.getElementById("colorHeaderFill").value = decoration.headerFillColor ? "#" + decoration.headerFillColor : "#dbe6ff";
+    document.getElementById("chkFreezeHeader").checked = decoration.freezeHeader;
+
+    var colgroup = document.getElementById("previewTableColgroup");
+    colgroup.innerHTML = "";
+    var snoCol = document.createElement("col");
+    if (decoration.columnWidths[EXPORT_SNO_KEY]) snoCol.style.width = decoration.columnWidths[EXPORT_SNO_KEY] + "px";
+    colgroup.appendChild(snoCol);
+
     var headRow = document.getElementById("previewTableHeadRow");
     headRow.innerHTML = "";
     var thSno = document.createElement("th");
+    thSno.className = "preview-th-draggable";
     thSno.textContent = "S.No.";
     headRow.appendChild(thSno);
+    attachColumnResizer(thSno, snoCol, EXPORT_SNO_KEY);
+
     exportColumns.forEach(function (c) {
+      var col = document.createElement("col");
+      if (decoration.columnWidths[c]) col.style.width = decoration.columnWidths[c] + "px";
+      colgroup.appendChild(col);
+
       var th = document.createElement("th");
       makePreviewHeaderDraggable(th, c, headRow);
       headRow.appendChild(th);
+      attachColumnResizer(th, col, c);
+      attachNumberFormatSelect(th, c, data, decoration);
     });
 
     var body = document.getElementById("previewTableBody");
@@ -2101,6 +2294,34 @@
       body.appendChild(tr);
     });
   }
+
+  // Undoes the merge that just ran (see the preMergeSnapshot capture in
+  // btnFormulaNext) so the Formula screen's Next button can perform one
+  // clean re-merge — of the same rows, or of edited formula output —
+  // instead of appending a duplicate copy of this upload's rows on top of
+  // itself. A no-op restore (snapshot doesn't match the current upload,
+  // e.g. this Preview was somehow reached another way) just navigates back.
+  document.getElementById("btnPreviewBack").addEventListener("click", function () {
+    if (preMergeSnapshot &&
+        preMergeSnapshot.masterReportName === state.selectedMasterReport &&
+        preMergeSnapshot.reportTypeName === state.selectedReportType) {
+      saveMasterReportData(state.selectedMasterReport, preMergeSnapshot.data);
+      saveMasterReports(preMergeSnapshot.registry);
+      recordSetupProgress(state.selectedMasterReport, state.selectedReportType, 4, {
+        fileName: state.fileName,
+        fileSize: state.fileSize,
+        selectedSheetName: state.selectedSheetName,
+        selectedHeaderRowIndex: state.selectedHeaderRowIndex,
+        currentFileHeaders: currentFileHeaders,
+        currentFileRows: currentFileRows,
+        selectedColumns: state.selectedColumns,
+        selectedDateColumnHeader: state.selectedDateColumnHeader,
+        currentRenamedRows: currentRenamedRows
+      });
+    }
+    renderFormulaScreen();
+    showScreen("screen-formula");
+  });
 
   document.getElementById("btnPreviewHome").addEventListener("click", function () {
     resetFileState();
@@ -2131,11 +2352,70 @@
     return fmt(min) + " to " + fmt(max);
   }
 
-  function generateMasterReportExport() {
+  // Excel number-format codes behind each NUMBER_FORMAT_OPTIONS choice.
+  // "plain" has no entry — it means "don't set a custom format", i.e.
+  // leave the cell exactly as an untouched export would.
+  var NUMBER_FORMAT_CODES = {
+    currency: '"₹"#,##0.00',
+    percentage: "0.00%",
+    decimal2: "0.00"
+  };
+
+  // Rough px→Excel-"characters" conversion (Calibri 11, SheetJS's own
+  // default column font): ~7px per character plus a little cell padding.
+  // Precision doesn't matter here — this only has to look reasonably close
+  // to what the user dragged on screen.
+  function pxToExcelChars(px) {
+    return Math.max(4, Math.round((px - 5) / 7));
+  }
+
+  // Applies whichever decoration prefs are actually set to the worksheet
+  // that generateMasterReportExport() just built via aoa_to_sheet — every
+  // piece here is skipped independently when untouched, so a user who
+  // never opens the decoration toolbar gets a sheet with none of `!cols`,
+  // cell `.s`, or cell `.z` set at all, identical to the export before this
+  // feature existed.
+  function applyExportDecorationToSheet(ws, exportColumns, data, decoration, headerRowIndex0) {
+    var hasCustomWidths = Object.keys(decoration.columnWidths).length > 0;
+    if (hasCustomWidths) {
+      var widthKeys = [EXPORT_SNO_KEY].concat(exportColumns);
+      ws["!cols"] = widthKeys.map(function (key) {
+        return decoration.columnWidths[key] ? { wch: pxToExcelChars(decoration.columnWidths[key]) } : {};
+      });
+    }
+
+    if (decoration.headerBold || decoration.headerFillColor) {
+      var headerStyle = {};
+      if (decoration.headerBold) headerStyle.font = { bold: true };
+      if (decoration.headerFillColor) headerStyle.fill = { fgColor: { rgb: decoration.headerFillColor } };
+      for (var c = 0; c <= exportColumns.length; c++) {
+        var addr = XLSX.utils.encode_cell({ r: headerRowIndex0, c: c });
+        if (ws[addr]) ws[addr].s = headerStyle;
+      }
+    }
+
+    exportColumns.forEach(function (colName, idx) {
+      var fmtKey = decoration.numberFormats[colName];
+      var fmtCode = fmtKey && NUMBER_FORMAT_CODES[fmtKey];
+      if (!fmtCode) return;
+      var colIdx = idx + 1; // +1 for the S.No. column
+      for (var r = 0; r < data.rows.length; r++) {
+        var addr = XLSX.utils.encode_cell({ r: headerRowIndex0 + 1 + r, c: colIdx });
+        if (ws[addr]) ws[addr].z = fmtCode;
+      }
+    });
+  }
+
+  // onDone(true) once the file has actually been handed to the browser for
+  // download, onDone(false) if there was nothing to export — callers chain
+  // their post-download navigation off this instead of a plain return
+  // value, since the freeze-header path above is asynchronous.
+  function generateMasterReportExport(onDone) {
     var data = getMasterReportData(state.selectedMasterReport);
     if (!data || !data.rows.length) {
       alert("No data to export yet.");
-      return false;
+      onDone(false);
+      return;
     }
 
     var exportColumns = getEffectiveExportColumns(state.selectedReportType, data.columns); // __saiDate is bookkeeping-only, never exported
@@ -2147,6 +2427,7 @@
     aoa.push(["Date generated: " + todayText]);
     aoa.push(["Period covered: " + computePeriodCoveredText(data.rows)]);
     aoa.push([]);
+    var headerRowIndex0 = aoa.length; // row index of the header row, 0-based
     aoa.push(["S.No."].concat(exportColumns));
     data.rows.forEach(function (row, idx) {
       aoa.push([idx + 1].concat(exportColumns.map(function (c) {
@@ -2156,30 +2437,105 @@
     });
 
     var ws = XLSX.utils.aoa_to_sheet(aoa);
+    var decoration = getExportDecorationFor(state.selectedReportType);
+    applyExportDecorationToSheet(ws, exportColumns, data, decoration, headerRowIndex0);
+
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Master Report");
     var safeName = state.selectedMasterReport.replace(/[\\/:*?"<>|]/g, "_");
-    XLSX.writeFile(wb, safeName + ".xlsx");
 
-    var msg = document.getElementById("previewExportMsg");
-    msg.textContent = "Downloaded \"" + safeName + ".xlsx\".";
-    msg.hidden = false;
-    return true;
+    function finish() {
+      var msg = document.getElementById("previewExportMsg");
+      msg.textContent = "Downloaded \"" + safeName + ".xlsx\".";
+      msg.hidden = false;
+      onDone(true);
+    }
+
+    if (decoration.freezeHeader) {
+      // Freeze just below the header row, whatever row that ends up being
+      // (fixed at row 6 today, but derived rather than hardcoded).
+      var freezeRow0 = headerRowIndex0 + 1; // 0-based first frozen-out (scrollable) row
+      downloadWorkbookWithFreezeAt(wb, safeName, freezeRow0, finish);
+    } else {
+      XLSX.writeFile(wb, safeName + ".xlsx");
+      finish();
+    }
+  }
+
+  // Neither SheetJS nor xlsx-js-style can write frozen panes, so when the
+  // user has asked for one, the already-written .xlsx (a zip archive) is
+  // unzipped, the single sheet's XML is patched with a <pane> element
+  // (frozen right under freezeRow0, this export's actual header row rather
+  // than an assumed row 1), and rezipped for download — the one piece of
+  // this feature no JS library exposes an API for. Falls back to a plain
+  // (unfrozen) download if the patch fails for any reason, since freezing
+  // is a nice-to-have that must never block getting the file at all.
+  function downloadWorkbookWithFreezeAt(wb, safeName, freezeRow0, cb) {
+    var topLeftCell = XLSX.utils.encode_cell({ r: freezeRow0, c: 0 });
+    var paneXml = '<pane ySplit="' + freezeRow0 + '" topLeftCell="' + topLeftCell + '" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft"/>';
+    var wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+
+    JSZip.loadAsync(wbout).then(function (zip) {
+      var sheetFile = zip.file("xl/worksheets/sheet1.xml");
+      if (!sheetFile) {
+        var matches = zip.file(/^xl\/worksheets\/sheet\d+\.xml$/);
+        sheetFile = matches && matches[0] ? matches[0] : null;
+      }
+      if (!sheetFile) throw new Error("Worksheet XML not found in generated file.");
+      var sheetPath = sheetFile.name;
+
+      return sheetFile.async("string").then(function (xml) {
+        var patched;
+        if (/<sheetViews>[\s\S]*?<\/sheetViews>/.test(xml)) {
+          patched = xml.replace(/<sheetViews>[\s\S]*?<\/sheetViews>/, function (block) {
+            if (/<sheetView[^>]*\/>/.test(block)) {
+              return block.replace(/<sheetView([^>]*)\/>/, function (m, attrs) {
+                return "<sheetView" + attrs + ">" + paneXml + "</sheetView>";
+              });
+            }
+            return block.replace(/(<sheetView[^>]*>)/, "$1" + paneXml);
+          });
+        } else {
+          patched = xml.replace(/(<worksheet[^>]*>)/, '$1<sheetViews><sheetView workbookViewId="0">' + paneXml + "</sheetView></sheetViews>");
+        }
+        zip.file(sheetPath, patched);
+        return zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      });
+    }).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = safeName + ".xlsx";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      cb();
+    }).catch(function (err) {
+      console.error("[SAI] Freeze-header export failed, downloading without freeze:", err);
+      XLSX.writeFile(wb, safeName + ".xlsx");
+      cb();
+    });
   }
 
   document.getElementById("btnPreviewDownload").addEventListener("click", function () {
-    if (!generateMasterReportExport()) return;
-    resetFileState();
-    state.selectedMasterReport = "";
-    state.selectedReportType = "";
-    renderHomeScreen();
-    showScreen("screen-home");
+    generateMasterReportExport(function (ok) {
+      if (!ok) return;
+      resetFileState();
+      state.selectedMasterReport = "";
+      state.selectedReportType = "";
+      renderHomeScreen();
+      showScreen("screen-home");
+    });
   });
 
   document.getElementById("btnPreviewDownloadAnalyse").addEventListener("click", function () {
     var masterReportName = state.selectedMasterReport;
-    if (!generateMasterReportExport()) return;
-    openDashboardFor(masterReportName);
+    generateMasterReportExport(function (ok) {
+      if (!ok) return;
+      dashboardEntryScreen = "screen-preview";
+      openDashboardFor(masterReportName);
+    });
   });
 
   /* =======================================================================
@@ -2912,6 +3268,11 @@
     var data = getMasterReportData(currentDashboardReport);
     var mr = getMasterReport(currentDashboardReport);
 
+    // Only shown when this Dashboard visit came from the Preview screen
+    // (via Download & Analyse) — reaching it straight from a Home card's
+    // "Analyse" button has no Preview step to step back into.
+    document.getElementById("btnDashboardBackPreview").hidden = dashboardEntryScreen !== "screen-preview";
+
     document.getElementById("dashboardTitle").textContent = currentDashboardReport;
     document.getElementById("dashboardSubtitle").textContent =
       (data ? data.rows.length : 0) + " rows · Updated " + formatDateForDisplay(data ? data.lastUpdated : null);
@@ -2936,6 +3297,10 @@
     renderInsightsPanel();
   }
 
+  document.getElementById("btnDashboardBackPreview").addEventListener("click", function () {
+    renderPreviewScreen();
+    showScreen("screen-preview");
+  });
   document.getElementById("btnDashboardBack").addEventListener("click", function () {
     renderHomeScreen();
     showScreen("screen-home");
