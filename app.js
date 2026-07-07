@@ -15,7 +15,8 @@
     dateColumnPreference: "sai_date_column_preference",
     masterReportData: "sai_master_report_data",
     setupProgress: "sai_setup_progress",
-    columnOrder: "sai_column_order"
+    columnOrder: "sai_column_order",
+    dashboardCustom: "sai_dashboard_custom"
   };
 
   function loadJSON(key, fallback) {
@@ -192,6 +193,21 @@
     var ordered = saved.filter(function (c) { return dataColumns.indexOf(c) !== -1; });
     dataColumns.forEach(function (c) { if (ordered.indexOf(c) === -1) ordered.push(c); });
     return ordered;
+  }
+
+  // The Analysis Dashboard's Custom Analysis picks (Layer 2) are saved per
+  // Master Report — which columns the user chose to chart, plus any typed
+  // explanation for a column SAI couldn't confidently type on its own —
+  // so reopening the dashboard for a report later restores the same charts
+  // instead of starting from a blank picker every time.
+  function getDashboardCustomFor(masterReportName) {
+    var all = loadJSON(STORAGE_KEYS.dashboardCustom, {});
+    return all[masterReportName] || { columns: [], explanations: {} };
+  }
+  function saveDashboardCustomFor(masterReportName, custom) {
+    var all = loadJSON(STORAGE_KEYS.dashboardCustom, {});
+    all[masterReportName] = custom;
+    saveJSON(STORAGE_KEYS.dashboardCustom, all);
   }
 
   function parseDateSafe(value) {
@@ -734,6 +750,17 @@
         showScreen("screen-master-report");
       });
       card.appendChild(addBtn);
+
+      if (rowCount > 0) {
+        var analyseBtn = document.createElement("button");
+        analyseBtn.type = "button";
+        analyseBtn.className = "btn";
+        analyseBtn.textContent = "Analyse";
+        analyseBtn.addEventListener("click", function () {
+          openDashboardFor(mr.name);
+        });
+        card.appendChild(analyseBtn);
+      }
 
       list.appendChild(card);
     });
@@ -2068,7 +2095,7 @@
     var data = getMasterReportData(state.selectedMasterReport);
     if (!data || !data.rows.length) {
       alert("No data to export yet.");
-      return;
+      return false;
     }
 
     var exportColumns = getEffectiveExportColumns(state.selectedMasterReport, data.columns); // __saiDate is bookkeeping-only, never exported
@@ -2097,10 +2124,784 @@
     var msg = document.getElementById("previewExportMsg");
     msg.textContent = "Downloaded \"" + safeName + ".xlsx\".";
     msg.hidden = false;
+    return true;
   }
 
-  document.getElementById("btnPreviewGenerate").addEventListener("click", function () {
-    generateMasterReportExport();
+  document.getElementById("btnPreviewDownload").addEventListener("click", function () {
+    if (!generateMasterReportExport()) return;
+    resetFileState();
+    state.selectedMasterReport = "";
+    state.selectedReportType = "";
+    renderHomeScreen();
+    showScreen("screen-home");
+  });
+
+  document.getElementById("btnPreviewDownloadAnalyse").addEventListener("click", function () {
+    var masterReportName = state.selectedMasterReport;
+    if (!generateMasterReportExport()) return;
+    openDashboardFor(masterReportName);
+  });
+
+  /* =======================================================================
+   * Analysis Dashboard
+   *
+   * Three layers, built from whatever the Master Report's own data
+   * happens to contain — there is no fixed schema, so every layer works
+   * off name/value heuristics rather than assuming specific columns exist:
+   *   1. Auto Analysis  — always-on stat tiles + charts, picked by
+   *      scanning column names/values (classifyMasterReportColumns).
+   *   2. Custom Analysis — user picks columns; SAI infers a chart type
+   *      from the column's own values, falling back to a typed
+   *      explanation when it can't tell confidently.
+   *   3. Key Insights — one plain-English sentence per auto + custom
+   *      chart, collected as they're built rather than derived separately.
+   * ===================================================================== */
+
+  var DASH_PALETTE = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
+  var DASH_GRID_COLOR = "#e1e0d9";
+  var DASH_MUTED = "#898781";
+  var DASH_POSITIVE_WORDS = ["yes", "y", "true", "1", "returned", "refund", "refunded", "rto", "cancelled", "canceled"];
+
+  var currentDashboardReport = "";
+  var dashboardAutoInsights = [];
+  var dashboardCustomInsights = [];
+
+  /* ---- value helpers ---- */
+  function dashIsBlank(v) { return v === undefined || v === null || String(v).trim() === ""; }
+  function dashLooksNumeric(v) {
+    if (typeof v === "number") return isFinite(v);
+    if (typeof v !== "string") return false;
+    var s = v.trim().replace(/,/g, "").replace(/^[₹$]\s?/, "").replace(/%$/, "");
+    if (s === "") return false;
+    return !isNaN(Number(s));
+  }
+  function dashToNumber(v) {
+    if (typeof v === "number") return isFinite(v) ? v : null;
+    if (typeof v !== "string") return null;
+    var s = v.trim().replace(/,/g, "").replace(/^[₹$]\s?/, "").replace(/%$/, "");
+    if (s === "") return null;
+    var n = Number(s);
+    return isNaN(n) ? null : n;
+  }
+  var DASH_MONTH_NAMES = /jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i;
+  // Chrome/V8's Date parser has a very lenient non-standard fallback mode
+  // that can return a "valid" (but nonsensical) Date for plain free text —
+  // so any string must look date-shaped BEFORE being handed to `new
+  // Date()`, otherwise a free-text column (e.g. delivery notes) gets
+  // misread as a date column just because a few values happened to parse.
+  function dashLooksLikeDateString(v) {
+    if (typeof v !== "string") return v instanceof Date;
+    var s = v.trim();
+    if (/^\d{4}-\d{1,2}-\d{1,2}([ t]\d{1,2}:\d{2}(:\d{2})?)?$/i.test(s)) return true;
+    if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(s)) return true;
+    if (DASH_MONTH_NAMES.test(s) && /\d{1,4}/.test(s) && s.length <= 24) return true;
+    return false;
+  }
+  function mondayOf(dateObj) {
+    var d = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate());
+    var day = (d.getDay() + 6) % 7; // 0 = Monday
+    d.setDate(d.getDate() - day);
+    return d;
+  }
+  function weekLabel(d) { return "Week of " + d.toLocaleDateString("en-IN", { day: "numeric", month: "short" }); }
+
+  // Indian numbering (K / L / Cr) since SAI is built for Indian D2C brands —
+  // plain toLocaleString would use the international 1,000,000 grouping.
+  function formatIndianCompact(n) {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    var sign = n < 0 ? "-" : "";
+    var abs = Math.abs(n);
+    if (abs >= 1e7) return sign + (abs / 1e7).toFixed(abs >= 1e8 ? 1 : 2).replace(/\.0+$/, "") + " Cr";
+    if (abs >= 1e5) return sign + (abs / 1e5).toFixed(abs >= 1e6 ? 1 : 2).replace(/\.0+$/, "") + " L";
+    if (abs >= 1000) return sign + (abs / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+    return sign + Math.round(abs).toLocaleString("en-IN");
+  }
+  function niceMetricLabel(column) {
+    var c = column.toLowerCase();
+    if (c.indexOf("revenue") !== -1) return "Revenue";
+    if (c.indexOf("gmv") !== -1) return "GMV";
+    if (c.indexOf("sales") !== -1) return "Sales";
+    if (c.indexOf("amount") !== -1 || c.indexOf("value") !== -1 || c.indexOf("price") !== -1) return "Order Value";
+    return column;
+  }
+  function looksLikeCurrencyColumn(column) {
+    return /(revenue|amount|sales|price|value|gmv|payout|commission|charge|spend|cost|fee)/i.test(column);
+  }
+  function formatMetricValue(n, column) {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    return (looksLikeCurrencyColumn(column) ? "₹" : "") + formatIndianCompact(n);
+  }
+
+  /* ---- column classification ----
+   * Samples up to 500 rows per column (full data is usually far smaller,
+   * but this keeps a very large master report responsive) and classifies
+   * it as numeric / date / categorical purely from its own values — the
+   * same classification backs both the Layer 1 heuristics below and the
+   * Layer 2 custom-column type detection. */
+  function classifyColumn(rows, column) {
+    var total = 0, numericHits = 0, dateHits = 0;
+    var valueCounts = {};
+    var sampleSize = Math.min(rows.length, 500);
+    for (var i = 0; i < sampleSize; i++) {
+      var v = rows[i][column];
+      if (dashIsBlank(v)) continue;
+      total++;
+      if (dashLooksNumeric(v)) {
+        numericHits++;
+      } else if (dashLooksLikeDateString(v)) {
+        var d = new Date(v);
+        if (!isNaN(d.getTime()) && d.getFullYear() > 1990 && d.getFullYear() < 2100) dateHits++;
+      }
+      var key = String(v).trim().toLowerCase();
+      valueCounts[key] = (valueCounts[key] || 0) + 1;
+    }
+    var uniqueCount = Object.keys(valueCounts).length;
+    var numericRatio = total ? numericHits / total : 0;
+    var dateRatio = total ? dateHits / total : 0;
+    var type = "unknown";
+    if (numericRatio >= 0.85) type = "numeric";
+    else if (dateRatio >= 0.7) type = "date";
+    else if (total > 0 && uniqueCount <= Math.max(20, Math.ceil(total * 0.5))) type = "categorical";
+    return {
+      column: column, total: total, numericRatio: numericRatio, dateRatio: dateRatio,
+      uniqueCount: uniqueCount, valueCounts: valueCounts, type: type, confident: type !== "unknown"
+    };
+  }
+
+  function findColumnByKeywords(columns, keywords) {
+    var lowerCols = columns.map(function (c) { return c.toLowerCase(); });
+    for (var k = 0; k < keywords.length; k++) {
+      for (var i = 0; i < lowerCols.length; i++) {
+        if (lowerCols[i].indexOf(keywords[k]) !== -1) return columns[i];
+      }
+    }
+    return null;
+  }
+
+  function classifyMasterReportColumns(data) {
+    var rows = data.rows;
+    var classifications = {};
+    data.columns.forEach(function (c) {
+      // "Report Type" is SAI's own bookkeeping tag, not a value from any
+      // uploaded file — its meaning is already known, so it's always a
+      // confident categorical column rather than run through classifyColumn.
+      classifications[c] = c === "Report Type"
+        ? { column: c, total: rows.length, numericRatio: 0, dateRatio: 0, uniqueCount: 0, valueCounts: {}, type: "categorical", confident: true }
+        : classifyColumn(rows, c);
+    });
+
+    var columns = data.columns.filter(function (c) { return c !== "Report Type"; });
+    var numericColumns = columns.filter(function (c) { return classifications[c].type === "numeric"; });
+
+    var platformColumn = findColumnByKeywords(columns, ["platform", "channel", "marketplace", "source", "store"]);
+    if (platformColumn && classifications[platformColumn].type === "numeric") platformColumn = null;
+
+    var returnsColumn = findColumnByKeywords(columns, ["return", "refund", "rto"]);
+    var adSpendColumn = findColumnByKeywords(numericColumns, ["ad spend", "adspend", "ad cost", "marketing spend", "marketing cost", "spend"]);
+    var revenueColumn = findColumnByKeywords(numericColumns, ["revenue", "net sales", "gross sales", "sales amount", "gmv", "total amount", "amount", "sales", "price"]);
+    if (adSpendColumn && adSpendColumn === revenueColumn) adSpendColumn = null;
+
+    var primaryNumericColumn = revenueColumn || (numericColumns.length ? numericColumns[0] : null);
+
+    return {
+      classifications: classifications,
+      numericColumns: numericColumns,
+      platformColumn: platformColumn,
+      returnsColumn: returnsColumn,
+      adSpendColumn: adSpendColumn,
+      revenueColumn: revenueColumn,
+      primaryNumericColumn: primaryNumericColumn
+    };
+  }
+
+  /* ---- aggregation ---- */
+  function sumColumn(rows, column) {
+    var total = 0, any = false;
+    rows.forEach(function (r) { var n = dashToNumber(r[column]); if (n !== null) { total += n; any = true; } });
+    return any ? total : null;
+  }
+  function averageColumn(rows, column) {
+    var total = 0, count = 0;
+    rows.forEach(function (r) { var n = dashToNumber(r[column]); if (n !== null) { total += n; count++; } });
+    return count ? total / count : null;
+  }
+
+  // Groups by the master report's own canonical date (__saiDate, resolved
+  // once per row at merge time from whichever column each Report Type
+  // marked as its date column) rather than re-detecting a date column —
+  // that resolution already exists and is more reliable than guessing.
+  function groupBySaiDateWeek(rows, valueColumn) {
+    var buckets = {};
+    rows.forEach(function (r) {
+      if (!r.__saiDate) return;
+      var d = new Date(r.__saiDate);
+      if (isNaN(d.getTime())) return;
+      var monday = mondayOf(d);
+      var key = monday.getTime();
+      if (!buckets[key]) buckets[key] = { date: monday, count: 0, sum: 0 };
+      buckets[key].count++;
+      if (valueColumn) {
+        var n = dashToNumber(r[valueColumn]);
+        if (n !== null) buckets[key].sum += n;
+      }
+    });
+    return Object.keys(buckets).map(function (k) { return buckets[k]; }).sort(function (a, b) { return a.date - b.date; });
+  }
+
+  // Same idea as groupBySaiDateWeek but for an arbitrary column the user
+  // picked in Custom Analysis — __saiDate only tracks one canonical date
+  // per row, but a file can have more than one date-like column (e.g. an
+  // "Order Date" and a separate "Ship Date").
+  function groupByCustomDateWeek(rows, column) {
+    var buckets = {};
+    rows.forEach(function (r) {
+      var v = r[column];
+      if (dashIsBlank(v) || !dashLooksLikeDateString(v)) return;
+      var d = new Date(v);
+      if (isNaN(d.getTime())) return;
+      var monday = mondayOf(d);
+      var key = monday.getTime();
+      if (!buckets[key]) buckets[key] = { date: monday, count: 0 };
+      buckets[key].count++;
+    });
+    return Object.keys(buckets).map(function (k) { return buckets[k]; }).sort(function (a, b) { return a.date - b.date; });
+  }
+
+  function groupByColumnValue(rows, column, valueColumn) {
+    var buckets = {};
+    rows.forEach(function (r) {
+      var raw = r[column];
+      if (dashIsBlank(raw)) return;
+      var label = String(raw).trim();
+      var key = label.toLowerCase();
+      if (!buckets[key]) buckets[key] = { label: label, count: 0, sum: 0 };
+      buckets[key].count++;
+      if (valueColumn) {
+        var n = dashToNumber(r[valueColumn]);
+        if (n !== null) buckets[key].sum += n;
+      }
+    });
+    var list = Object.keys(buckets).map(function (k) { return buckets[k]; });
+    list.sort(function (a, b) { return valueColumn ? b.sum - a.sum : b.count - a.count; });
+    return list;
+  }
+
+  // Beyond the palette's 8 categorical slots, fold the tail into "Other"
+  // rather than generating a 9th hue (a generated hue is indistinguishable
+  // from an existing one under colorblind simulation).
+  function foldIntoOther(list, maxSlots) {
+    if (list.length <= maxSlots) return list;
+    var head = list.slice(0, maxSlots - 1);
+    var tail = list.slice(maxSlots - 1);
+    head.push({
+      label: "Other",
+      count: tail.reduce(function (s, x) { return s + x.count; }, 0),
+      sum: tail.reduce(function (s, x) { return s + x.sum; }, 0)
+    });
+    return head;
+  }
+
+  function computeReturnRateForColumn(rows, column) {
+    var total = 0, positive = 0;
+    rows.forEach(function (r) {
+      var v = r[column];
+      if (dashIsBlank(v)) return;
+      total++;
+      if (dashLooksNumeric(v)) {
+        if (dashToNumber(v) > 0) positive++;
+      } else {
+        var s = String(v).trim().toLowerCase();
+        if (DASH_POSITIVE_WORDS.indexOf(s) !== -1 || s.indexOf("return") !== -1 || s.indexOf("refund") !== -1) positive++;
+      }
+    });
+    return total ? (positive / total) * 100 : null;
+  }
+
+  function computeROAS(rows, spendColumn, revenueColumn) {
+    var spend = sumColumn(rows, spendColumn);
+    var revenue = sumColumn(rows, revenueColumn);
+    if (!spend) return null;
+    return revenue / spend;
+  }
+
+  function buildHistogram(rows, column, binCount) {
+    var values = rows.map(function (r) { return dashToNumber(r[column]); }).filter(function (n) { return n !== null; });
+    if (!values.length) return { labels: [], counts: [] };
+    var min = Math.min.apply(null, values);
+    var max = Math.max.apply(null, values);
+    if (min === max) return { labels: [formatIndianCompact(min)], counts: [values.length] };
+    var bins = binCount || 8;
+    var width = (max - min) / bins;
+    var counts = new Array(bins).fill(0);
+    values.forEach(function (v) {
+      var idx = Math.min(bins - 1, Math.floor((v - min) / width));
+      counts[idx]++;
+    });
+    var labels = [];
+    for (var i = 0; i < bins; i++) {
+      labels.push(formatIndianCompact(min + i * width) + "–" + formatIndianCompact(min + (i + 1) * width));
+    }
+    return { labels: labels, counts: counts };
+  }
+
+  // A column SAI can't confidently type on its own falls back to keyword
+  // matching on the user's typed explanation, then to whichever raw ratio
+  // (numeric vs date) the column's own values lean toward.
+  function inferTypeFromExplanation(text, classification) {
+    var t = (text || "").toLowerCase();
+    if (t) {
+      if (/(percent|percentage|%|rate|charge|charged|commission|cost|price|amount|revenue|spend|fee|quantity|count|number|units?)/.test(t)) {
+        return classification.numericRatio >= 0.4 ? "numeric" : "categorical";
+      }
+      if (/(date|time|day|month|week|year|when)/.test(t)) return "date";
+      if (/(category|type|status|platform|channel|group|segment|name|label|city|state|region)/.test(t)) return "categorical";
+    }
+    if (classification.numericRatio >= classification.dateRatio && classification.numericRatio >= 0.4) return "numeric";
+    if (classification.dateRatio > 0.4) return "date";
+    return "categorical";
+  }
+
+  /* ---- Chart.js rendering ---- */
+  function dashChartBaseOptions() {
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false, labels: { color: "#52514e" } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: DASH_MUTED } },
+        y: { grid: { color: DASH_GRID_COLOR }, ticks: { color: DASH_MUTED }, beginAtZero: true }
+      }
+    };
+  }
+  function renderBarChart(canvas, labels, values, opts) {
+    opts = opts || {};
+    var options = dashChartBaseOptions();
+    if (opts.horizontal) options.indexAxis = "y";
+    new Chart(canvas.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: labels,
+        datasets: [{ data: values, backgroundColor: opts.colors || DASH_PALETTE[0], borderRadius: 4, maxBarThickness: 24 }]
+      },
+      options: options
+    });
+  }
+  function renderDoughnutChart(canvas, labels, values) {
+    new Chart(canvas.getContext("2d"), {
+      type: "doughnut",
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          backgroundColor: labels.map(function (_, i) { return DASH_PALETTE[i % DASH_PALETTE.length]; }),
+          borderColor: "#ffffff",
+          borderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: true, position: "bottom", labels: { color: "#52514e", boxWidth: 12, padding: 12 } } }
+      }
+    });
+  }
+  function renderLineChart(canvas, labels, values) {
+    var options = dashChartBaseOptions();
+    new Chart(canvas.getContext("2d"), {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          borderColor: DASH_PALETTE[0],
+          backgroundColor: "rgba(42, 120, 214, 0.1)",
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: DASH_PALETTE[0],
+          pointBorderColor: "#ffffff",
+          pointBorderWidth: 2,
+          fill: true,
+          tension: 0.25
+        }]
+      },
+      options: options
+    });
+  }
+
+  /* ---- DOM builders ---- */
+  function createStatTile(container, label, value) {
+    var tile = document.createElement("div");
+    tile.className = "stat-tile";
+    var lab = document.createElement("span");
+    lab.className = "stat-tile__label";
+    lab.textContent = label;
+    var val = document.createElement("span");
+    val.className = "stat-tile__value";
+    val.textContent = value;
+    tile.appendChild(lab);
+    tile.appendChild(val);
+    container.appendChild(tile);
+  }
+  function createChartCard(container, title, removable, onRemove) {
+    var card = document.createElement("div");
+    card.className = "chart-card";
+
+    var header = document.createElement("div");
+    header.className = "chart-card__header";
+    var h4 = document.createElement("h4");
+    h4.className = "chart-card__title";
+    h4.textContent = title;
+    header.appendChild(h4);
+    if (removable) {
+      var removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "link-btn chart-card__remove";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", onRemove);
+      header.appendChild(removeBtn);
+    }
+    card.appendChild(header);
+
+    var canvasWrap = document.createElement("div");
+    canvasWrap.className = "chart-card__canvas-wrap";
+    var canvas = document.createElement("canvas");
+    canvasWrap.appendChild(canvas);
+    card.appendChild(canvasWrap);
+
+    var insightEl = document.createElement("p");
+    insightEl.className = "chart-card__insight";
+    card.appendChild(insightEl);
+
+    container.appendChild(card);
+    return { canvas: canvas, insightEl: insightEl };
+  }
+
+  /* ---- Layer 3: Key Insights ---- */
+  function renderInsightsPanel() {
+    var list = document.getElementById("dashboardInsightsList");
+    list.innerHTML = "";
+    var all = dashboardAutoInsights.concat(dashboardCustomInsights);
+    if (!all.length) {
+      var li = document.createElement("li");
+      li.textContent = "Not enough data yet to generate insights.";
+      list.appendChild(li);
+      return;
+    }
+    all.forEach(function (text) {
+      var item = document.createElement("li");
+      item.textContent = text;
+      list.appendChild(item);
+    });
+  }
+
+  /* ---- Layer 1: Auto Analysis ---- */
+  function renderAutoAnalysis(data, mr) {
+    var kpiRow = document.getElementById("dashboardKpiRow");
+    var chartsGrid = document.getElementById("dashboardChartsGrid");
+    kpiRow.innerHTML = "";
+    chartsGrid.innerHTML = "";
+    dashboardAutoInsights = [];
+
+    var rows = data.rows;
+    var info = classifyMasterReportColumns(data);
+
+    createStatTile(kpiRow, "Total Rows", rows.length.toLocaleString("en-IN"));
+    createStatTile(kpiRow, "Report Types Merged", String(mr ? mr.reportTypesUsed.length : 0));
+    createStatTile(kpiRow, "Date Range Covered", computePeriodCoveredText(rows));
+
+    if (info.primaryNumericColumn) {
+      var col = info.primaryNumericColumn;
+      var total = sumColumn(rows, col);
+      var avg = averageColumn(rows, col);
+      createStatTile(kpiRow, "Total " + niceMetricLabel(col), formatMetricValue(total, col));
+      createStatTile(kpiRow, "Average " + niceMetricLabel(col), formatMetricValue(avg, col));
+      dashboardAutoInsights.push("Total " + niceMetricLabel(col).toLowerCase() + " across all rows is " + formatMetricValue(total, col) + ".");
+    }
+
+    var hasDates = rows.some(function (r) { return !!r.__saiDate; });
+    if (hasDates) {
+      var weeks = groupBySaiDateWeek(rows, info.primaryNumericColumn);
+      if (weeks.length) {
+        var labels = weeks.map(function (w) { return weekLabel(w.date); });
+        var values = weeks.map(function (w) { return info.primaryNumericColumn ? w.sum : w.count; });
+        var lineTitle = info.primaryNumericColumn ? (niceMetricLabel(info.primaryNumericColumn) + " Over Time") : "Rows Over Time";
+        var lineCard = createChartCard(chartsGrid, lineTitle, false);
+        renderLineChart(lineCard.canvas, labels, values);
+        var maxIdx = values.indexOf(Math.max.apply(null, values));
+        var metricWord = info.primaryNumericColumn ? niceMetricLabel(info.primaryNumericColumn).toLowerCase() : "order volume";
+        var lineInsight = labels[maxIdx] + " had the highest " + metricWord + ".";
+        lineCard.insightEl.textContent = lineInsight;
+        dashboardAutoInsights.push(lineInsight);
+      }
+    }
+
+    if (info.platformColumn) {
+      var breakdown = foldIntoOther(groupByColumnValue(rows, info.platformColumn, info.primaryNumericColumn), 8);
+      if (breakdown.length) {
+        var bLabels = breakdown.map(function (b) { return b.label; });
+        var bValues = breakdown.map(function (b) { return info.primaryNumericColumn ? b.sum : b.count; });
+        var bTotal = bValues.reduce(function (s, v) { return s + v; }, 0);
+        var bCard = createChartCard(chartsGrid, "Breakdown by " + info.platformColumn, false);
+        if (breakdown.length <= 6) {
+          renderDoughnutChart(bCard.canvas, bLabels, bValues);
+        } else {
+          renderBarChart(bCard.canvas, bLabels, bValues, {
+            horizontal: true,
+            colors: bLabels.map(function (_, i) { return DASH_PALETTE[i % DASH_PALETTE.length]; })
+          });
+        }
+        var topPct = bTotal ? Math.round((bValues[0] / bTotal) * 100) : 0;
+        var metricWord2 = info.primaryNumericColumn ? niceMetricLabel(info.primaryNumericColumn).toLowerCase() : "orders";
+        var breakdownInsight = bLabels[0] + " contributed " + topPct + "% of total " + metricWord2 + ".";
+        bCard.insightEl.textContent = breakdownInsight;
+        dashboardAutoInsights.push(breakdownInsight);
+      }
+    }
+
+    if (info.returnsColumn) {
+      var rate = computeReturnRateForColumn(rows, info.returnsColumn);
+      if (rate !== null) {
+        createStatTile(kpiRow, "Return Rate", rate.toFixed(1) + "%");
+        dashboardAutoInsights.push(rate.toFixed(1) + "% of rows were marked as returned or refunded (" + info.returnsColumn + ").");
+
+        if (hasDates) {
+          var weeklyReturns = {};
+          rows.forEach(function (r) {
+            if (!r.__saiDate) return;
+            var d = new Date(r.__saiDate);
+            if (isNaN(d.getTime())) return;
+            var key = mondayOf(d).getTime();
+            if (!weeklyReturns[key]) weeklyReturns[key] = { date: mondayOf(d), total: 0, positive: 0 };
+            weeklyReturns[key].total++;
+            var v = r[info.returnsColumn];
+            var isPositive = dashLooksNumeric(v)
+              ? dashToNumber(v) > 0
+              : (function () { var s = String(v || "").trim().toLowerCase(); return DASH_POSITIVE_WORDS.indexOf(s) !== -1 || s.indexOf("return") !== -1 || s.indexOf("refund") !== -1; })();
+            if (isPositive) weeklyReturns[key].positive++;
+          });
+          var weeksWithEnoughRows = Object.keys(weeklyReturns).map(function (k) { return weeklyReturns[k]; }).filter(function (w) { return w.total >= 3; });
+          if (weeksWithEnoughRows.length) {
+            weeksWithEnoughRows.sort(function (a, b) { return (b.positive / b.total) - (a.positive / a.total); });
+            var worst = weeksWithEnoughRows[0];
+            var worstRate = (worst.positive / worst.total) * 100;
+            dashboardAutoInsights.push(weekLabel(worst.date) + " had the highest return rate at " + worstRate.toFixed(1) + "%.");
+          }
+        }
+      }
+    }
+
+    if (info.adSpendColumn && info.revenueColumn) {
+      var roas = computeROAS(rows, info.adSpendColumn, info.revenueColumn);
+      if (roas !== null) {
+        createStatTile(kpiRow, "ROAS", roas.toFixed(2) + "x");
+        dashboardAutoInsights.push("Every ₹1 spent on ads returned ₹" + roas.toFixed(2) + " in revenue.");
+      }
+    }
+  }
+
+  /* ---- Layer 2: Custom Analysis ---- */
+  function renderCustomAnalysisChecklist(data) {
+    var checklist = document.getElementById("dashboardColumnChecklist");
+    checklist.innerHTML = "";
+    var custom = getDashboardCustomFor(currentDashboardReport);
+    var info = classifyMasterReportColumns(data);
+
+    data.columns.forEach(function (column) {
+      var classification = info.classifications[column];
+      var item = document.createElement("div");
+      item.className = "column-check-item";
+      item.dataset.column = column;
+
+      var label = document.createElement("label");
+      var checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "column-check-checkbox";
+      checkbox.checked = custom.columns.indexOf(column) !== -1;
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(column));
+      item.appendChild(label);
+
+      var prompt = document.createElement("div");
+      prompt.className = "column-explain-prompt";
+      prompt.hidden = !(checkbox.checked && !classification.confident);
+      var p = document.createElement("p");
+      p.textContent = "What does \"" + column + "\" represent? e.g. \"commission charged by the platform\"";
+      var input = document.createElement("input");
+      input.type = "text";
+      input.className = "column-explain-input";
+      input.placeholder = "Type a short explanation…";
+      input.value = custom.explanations[column] || "";
+      prompt.appendChild(p);
+      prompt.appendChild(input);
+      item.appendChild(prompt);
+
+      checkbox.addEventListener("change", function () {
+        prompt.hidden = !(checkbox.checked && !classification.confident);
+      });
+
+      checklist.appendChild(item);
+    });
+  }
+
+  function readCustomAnalysisSelections(data) {
+    var info = classifyMasterReportColumns(data);
+    var errorEl = document.getElementById("dashboardCustomError");
+    errorEl.hidden = true;
+
+    var selectedColumns = [];
+    var explanations = {};
+    var missingExplanation = null;
+
+    document.querySelectorAll("#dashboardColumnChecklist .column-check-item").forEach(function (item) {
+      var column = item.dataset.column;
+      var checkbox = item.querySelector(".column-check-checkbox");
+      if (!checkbox.checked) return;
+      selectedColumns.push(column);
+      var explainInput = item.querySelector(".column-explain-input");
+      var text = explainInput ? explainInput.value.trim() : "";
+      if (text) explanations[column] = text;
+      var classification = info.classifications[column];
+      if (!classification.confident && !text && !missingExplanation) missingExplanation = column;
+    });
+
+    if (missingExplanation) {
+      errorEl.textContent = "Please add a short explanation for \"" + missingExplanation + "\" so SAI knows how to chart it.";
+      errorEl.hidden = false;
+      return null;
+    }
+    return { columns: selectedColumns, explanations: explanations };
+  }
+
+  function renderCustomCharts(data) {
+    var grid = document.getElementById("dashboardCustomChartsGrid");
+    var emptyState = document.getElementById("dashboardCustomEmptyState");
+    grid.innerHTML = "";
+    dashboardCustomInsights = [];
+
+    var custom = getDashboardCustomFor(currentDashboardReport);
+    var info = classifyMasterReportColumns(data);
+    var rows = data.rows;
+
+    emptyState.hidden = custom.columns.length > 0;
+
+    custom.columns.forEach(function (column) {
+      if (data.columns.indexOf(column) === -1) return; // no longer part of this report's schema
+      var classification = info.classifications[column];
+      var explanation = custom.explanations[column] || "";
+      var type = classification.confident ? classification.type : inferTypeFromExplanation(explanation, classification);
+      var titleSuffix = explanation ? " — " + explanation : "";
+
+      function removeThisColumn() {
+        var updated = getDashboardCustomFor(currentDashboardReport);
+        updated.columns = updated.columns.filter(function (c) { return c !== column; });
+        delete updated.explanations[column];
+        saveDashboardCustomFor(currentDashboardReport, updated);
+        refreshCustomSection(data);
+      }
+
+      if (type === "numeric") {
+        var hist = buildHistogram(rows, column, 8);
+        if (!hist.labels.length) return;
+        var numCard = createChartCard(grid, column + titleSuffix, true, removeThisColumn);
+        renderBarChart(numCard.canvas, hist.labels, hist.counts);
+        var maxBinIdx = hist.counts.indexOf(Math.max.apply(null, hist.counts));
+        var numInsight = "Most values of " + column + " fall between " + hist.labels[maxBinIdx] + " (" + hist.counts[maxBinIdx] + " rows).";
+        numCard.insightEl.textContent = numInsight;
+        dashboardCustomInsights.push(numInsight);
+      } else if (type === "date") {
+        var weeks = groupByCustomDateWeek(rows, column);
+        if (!weeks.length) return;
+        var dateLabels = weeks.map(function (w) { return weekLabel(w.date); });
+        var dateValues = weeks.map(function (w) { return w.count; });
+        var dateCard = createChartCard(grid, column + " Over Time" + titleSuffix, true, removeThisColumn);
+        renderLineChart(dateCard.canvas, dateLabels, dateValues);
+        var maxWeekIdx = dateValues.indexOf(Math.max.apply(null, dateValues));
+        var dateInsight = dateLabels[maxWeekIdx] + " had the most entries for " + column + ".";
+        dateCard.insightEl.textContent = dateInsight;
+        dashboardCustomInsights.push(dateInsight);
+      } else {
+        var breakdown = foldIntoOther(groupByColumnValue(rows, column, null), 8);
+        if (!breakdown.length) return;
+        var catLabels = breakdown.map(function (b) { return b.label; });
+        var catValues = breakdown.map(function (b) { return b.count; });
+        var catTotal = catValues.reduce(function (s, v) { return s + v; }, 0);
+        var catCard = createChartCard(grid, "Breakdown by " + column + titleSuffix, true, removeThisColumn);
+        if (breakdown.length <= 6) renderDoughnutChart(catCard.canvas, catLabels, catValues);
+        else renderBarChart(catCard.canvas, catLabels, catValues, { horizontal: true, colors: catLabels.map(function (_, i) { return DASH_PALETTE[i % DASH_PALETTE.length]; }) });
+        var catTopPct = catTotal ? Math.round((catValues[0] / catTotal) * 100) : 0;
+        var catInsight = catLabels[0] + " is the most common value in " + column + ", appearing in " + catTopPct + "% of rows.";
+        catCard.insightEl.textContent = catInsight;
+        dashboardCustomInsights.push(catInsight);
+      }
+    });
+  }
+
+  function refreshCustomSection(data) {
+    renderCustomCharts(data);
+    renderInsightsPanel();
+  }
+
+  document.getElementById("btnCustomiseAnalysis").addEventListener("click", function () {
+    var data = getMasterReportData(currentDashboardReport);
+    if (!data) return;
+    renderCustomAnalysisChecklist(data);
+    document.getElementById("dashboardCustomError").hidden = true;
+    document.getElementById("dashboardCustomPanel").hidden = false;
+  });
+  document.getElementById("btnCustomAnalysisCancel").addEventListener("click", function () {
+    document.getElementById("dashboardCustomPanel").hidden = true;
+  });
+  document.getElementById("btnCustomAnalysisApply").addEventListener("click", function () {
+    var data = getMasterReportData(currentDashboardReport);
+    if (!data) return;
+    var result = readCustomAnalysisSelections(data);
+    if (!result) return;
+    saveDashboardCustomFor(currentDashboardReport, result);
+    document.getElementById("dashboardCustomPanel").hidden = true;
+    refreshCustomSection(data);
+  });
+
+  /* ---- Entry point + chrome ---- */
+  function openDashboardFor(masterReportName) {
+    currentDashboardReport = masterReportName;
+    renderDashboardScreen();
+    showScreen("screen-dashboard");
+  }
+
+  function renderDashboardScreen() {
+    var data = getMasterReportData(currentDashboardReport);
+    var mr = getMasterReport(currentDashboardReport);
+
+    document.getElementById("dashboardTitle").textContent = currentDashboardReport;
+    document.getElementById("dashboardSubtitle").textContent =
+      (data ? data.rows.length : 0) + " rows · Updated " + formatDateForDisplay(data ? data.lastUpdated : null);
+    document.getElementById("dashboardCustomPanel").hidden = true;
+    document.getElementById("dashboardCustomError").hidden = true;
+
+    if (!data || !data.rows.length) {
+      document.getElementById("dashboardKpiRow").innerHTML = "";
+      document.getElementById("dashboardChartsGrid").innerHTML = "";
+      document.getElementById("dashboardColumnChecklist").innerHTML = "";
+      document.getElementById("dashboardCustomChartsGrid").innerHTML = "";
+      document.getElementById("dashboardCustomEmptyState").hidden = true;
+      dashboardAutoInsights = [];
+      dashboardCustomInsights = [];
+      renderInsightsPanel();
+      return;
+    }
+
+    renderAutoAnalysis(data, mr);
+    renderCustomAnalysisChecklist(data);
+    renderCustomCharts(data);
+    renderInsightsPanel();
+  }
+
+  document.getElementById("btnDashboardBack").addEventListener("click", function () {
+    renderHomeScreen();
+    showScreen("screen-home");
+  });
+  document.getElementById("btnDashboardPdf").addEventListener("click", function () {
+    window.print();
   });
 
   /* ---------------------------------------------------------------------
