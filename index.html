@@ -76,6 +76,12 @@
     <div class="card">
       <h2>Upload sales file</h2>
       <p class="muted">Accepted formats: CSV, XLS, XLSX.</p>
+
+      <div class="upload-existing" id="uploadExistingWrap" hidden>
+        <p class="upload-existing__text">File already uploaded: <strong id="uploadExistingFilename"></strong></p>
+        <button class="btn btn--primary" id="btnUploadNext" type="button">Next &rarr;</button>
+      </div>
+
       <label class="dropzone" id="dropzone" for="fileInput">
         <span class="dropzone__icon">⬆</span>
         <span class="dropzone__text">Drag &amp; drop a file here, or click to browse</span>
