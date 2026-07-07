@@ -486,6 +486,27 @@ html, body {
 }
 .sheet-tile:hover { border-color: var(--color-primary); background: #f4f8ff; }
 
+.data-mode-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 8px;
+}
+.data-mode-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 16px;
+  background: #fafbfd;
+  cursor: pointer;
+  text-align: left;
+}
+.data-mode-option:hover { border-color: var(--color-primary); background: #f4f8ff; }
+.data-mode-option__title { font-size: 15px; font-weight: 700; color: var(--color-text); }
+.data-mode-option__desc { font-size: 13px; color: var(--color-muted); }
+
 /* Header row selection */
 .header-row-preview-wrap {
   overflow-x: auto;
