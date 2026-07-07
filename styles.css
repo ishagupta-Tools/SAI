@@ -310,6 +310,14 @@ html, body {
   font-size: 12px;
   font-weight: 600;
 }
+.column-tag {
+  margin-left: 8px;
+  padding: 2px 9px;
+  font-size: 11px;
+  background: var(--color-warn-bg);
+  color: var(--color-warn);
+  vertical-align: middle;
+}
 
 .actions { display: flex; gap: 12px; margin-top: 28px; }
 .actions--split { justify-content: space-between; align-items: center; }
