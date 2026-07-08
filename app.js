@@ -224,11 +224,14 @@
   function getExportDecorationFor(reportTypeName) {
     var all = loadJSON(STORAGE_KEYS.exportDecoration, {});
     var saved = all[reportTypeName];
-    if (!saved) return { columnWidths: {}, headerBold: false, headerFillColor: "", numberFormats: {}, freezeHeader: false, deletedColumns: [] };
+    if (!saved) return { columnWidths: {}, headerBold: false, headerFillColor: "", headerFontColor: "", cellFillColor: "", cellBorders: false, numberFormats: {}, freezeHeader: false, deletedColumns: [] };
     return {
       columnWidths: saved.columnWidths || {},
       headerBold: !!saved.headerBold,
       headerFillColor: saved.headerFillColor || "",
+      headerFontColor: saved.headerFontColor || "",
+      cellFillColor: saved.cellFillColor || "",
+      cellBorders: !!saved.cellBorders,
       numberFormats: saved.numberFormats || {},
       freezeHeader: !!saved.freezeHeader,
       deletedColumns: saved.deletedColumns || []
@@ -276,6 +279,40 @@
     saveSetupProgressList(getSetupProgressList().filter(function (p) {
       return p.masterReportName.toLowerCase() !== masterReportName.toLowerCase();
     }));
+  }
+
+  // Deletes ONE Report Type from ONE Master Report: its rows go, it leaves
+  // the card's tile list, and any in-progress setup for that combo is
+  // discarded — but the Master Report itself and the Report Type's global
+  // reusable prefs (mapping, formulas, etc.) both survive. Columns that end
+  // up blank in every remaining row are dropped from the report's column
+  // list too, so a column only this Report Type contributed doesn't linger
+  // as an empty ghost column in the preview/export (an all-blank column
+  // carries no information, so this can never lose data — and a remaining
+  // Report Type's next upload re-adds its columns via the normal merge).
+  function deleteReportTypeFromMasterReport(masterReportName, reportTypeName) {
+    var data = getMasterReportData(masterReportName);
+    if (data) {
+      data.rows = data.rows.filter(function (r) { return r["Report Type"] !== reportTypeName; });
+      data.columns = data.columns.filter(function (c) {
+        if (c === "Report Type") return true;
+        return data.rows.some(function (r) {
+          var v = r[c];
+          return v !== undefined && v !== null && String(v).trim() !== "";
+        });
+      });
+      saveMasterReportData(masterReportName, data);
+    }
+
+    var list = getMasterReports();
+    var entry = list.find(function (m) { return m.name.toLowerCase() === masterReportName.toLowerCase(); });
+    if (entry) {
+      entry.reportTypesUsed = entry.reportTypesUsed.filter(function (t) { return t !== reportTypeName; });
+      entry.totalRows = data ? data.rows.length : 0;
+      saveMasterReports(list);
+    }
+
+    clearSetupProgress(masterReportName, reportTypeName);
   }
 
   function parseDateSafe(value) {
@@ -863,6 +900,13 @@
         var tiles = document.createElement("div");
         tiles.className = "master-report-card__tiles";
         mr.reportTypesUsed.forEach(function (typeName) {
+          // The tile is itself a <button>, so its delete control has to be
+          // a sibling inside a wrapper (nesting a button in a button is
+          // invalid HTML and breaks click handling), styled to read as one
+          // chip with an × on its right edge.
+          var wrap = document.createElement("span");
+          wrap.className = "report-tile-wrap";
+
           var tile = document.createElement("button");
           tile.type = "button";
           tile.className = "report-tile";
@@ -873,7 +917,27 @@
             state.selectedReportType = typeName;
             showScreen("screen-upload");
           });
-          tiles.appendChild(tile);
+          wrap.appendChild(tile);
+
+          var tileDelete = document.createElement("button");
+          tileDelete.type = "button";
+          tileDelete.className = "report-tile-delete";
+          tileDelete.title = "Remove \"" + typeName + "\" from this Master Report";
+          tileDelete.textContent = "×";
+          tileDelete.addEventListener("click", function () {
+            var count = getReportTypeRowCount(mr.name, typeName);
+            var ok = window.confirm(
+              "Remove the Report Type \"" + typeName + "\" from \"" + mr.name + "\"?\n\n" +
+              "Its " + count + " row" + (count === 1 ? "" : "s") + " in this Master Report will be deleted. " +
+              "The Report Type's saved mapping and formulas stay available for reuse. This cannot be undone."
+            );
+            if (!ok) return;
+            deleteReportTypeFromMasterReport(mr.name, typeName);
+            renderHomeScreen();
+          });
+          wrap.appendChild(tileDelete);
+
+          tiles.appendChild(wrap);
         });
         card.appendChild(tiles);
       } else {
@@ -1894,19 +1958,23 @@
   }
 
   // Autocomplete matches against the "operand currently being typed" —
-  // bounded by the nearest operator/parenthesis on each side rather than
-  // whitespace, since a column name like "Order ID" has to be able to
-  // contain a space itself while still being treated as one candidate.
+  // bounded by the nearest operator/parenthesis/comma on each side rather
+  // than whitespace, since a column name like "Order ID" has to be able to
+  // contain a space itself while still being treated as one candidate. The
+  // comma boundary is what makes each CONCATENATE argument its own operand
+  // — without it, the second argument's partial spans back to the "(" and
+  // never matches anything, silently killing suggestions mid-function.
   function attachFormulaAutocomplete(row, input, dropdown) {
     var activeIndex = -1;
+    var OPERAND_BOUNDARY_CHARS = "+-*/(),";
 
     function operandBounds() {
       var val = input.value;
       var pos = input.selectionStart;
       var start = pos;
-      while (start > 0 && "+-*/()".indexOf(val[start - 1]) === -1) start--;
+      while (start > 0 && OPERAND_BOUNDARY_CHARS.indexOf(val[start - 1]) === -1) start--;
       var end = pos;
-      while (end < val.length && "+-*/()".indexOf(val[end]) === -1) end++;
+      while (end < val.length && OPERAND_BOUNDARY_CHARS.indexOf(val[end]) === -1) end++;
       return { start: start, end: end, pos: pos };
     }
 
@@ -1949,12 +2017,16 @@
       var bounds = operandBounds();
       var before = input.value.slice(0, bounds.start);
       var after = input.value.slice(bounds.end);
-      // Accepting a function inserts its opening parenthesis and leaves the
-      // caret inside it, ready for the first argument; a column just
-      // inserts its name plus a trailing space as before.
-      var inserted = origin === "function" ? name + "(" : name + " ";
+      // Accepting a function inserts the complete bracket PAIR with the
+      // caret left inside it — the closing ")" is thereby placed exactly
+      // once, already at its final position, so the user just types the
+      // argument list and never has to close (or prematurely closes) the
+      // bracket themselves. A column inserts its name plus a trailing
+      // space, as before.
+      var inserted = origin === "function" ? name + "()" : name + " ";
+      var caretOffset = origin === "function" ? inserted.length - 1 : inserted.length;
       input.value = before + inserted + after;
-      var newPos = (before + inserted).length;
+      var newPos = before.length + caretOffset;
       input.setSelectionRange(newPos, newPos);
       dropdown.hidden = true;
       refreshFormulaPreview(row);
@@ -2407,6 +2479,33 @@
     saveExportDecorationFor(state.selectedReportType, fresh);
     document.getElementById("colorHeaderFill").value = "#dbe6ff";
   });
+  document.getElementById("colorHeaderFont").addEventListener("input", function (e) {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.headerFontColor = e.target.value.replace(/^#/, "").toUpperCase();
+    saveExportDecorationFor(state.selectedReportType, fresh);
+  });
+  document.getElementById("btnHeaderFontClear").addEventListener("click", function () {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.headerFontColor = "";
+    saveExportDecorationFor(state.selectedReportType, fresh);
+    document.getElementById("colorHeaderFont").value = "#1c2433";
+  });
+  document.getElementById("colorCellFill").addEventListener("input", function (e) {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.cellFillColor = e.target.value.replace(/^#/, "").toUpperCase();
+    saveExportDecorationFor(state.selectedReportType, fresh);
+  });
+  document.getElementById("btnCellFillClear").addEventListener("click", function () {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.cellFillColor = "";
+    saveExportDecorationFor(state.selectedReportType, fresh);
+    document.getElementById("colorCellFill").value = "#ffffff";
+  });
+  document.getElementById("chkCellBorders").addEventListener("change", function (e) {
+    var fresh = getExportDecorationFor(state.selectedReportType);
+    fresh.cellBorders = e.target.checked;
+    saveExportDecorationFor(state.selectedReportType, fresh);
+  });
   document.getElementById("chkFreezeHeader").addEventListener("change", function (e) {
     var fresh = getExportDecorationFor(state.selectedReportType);
     fresh.freezeHeader = e.target.checked;
@@ -2436,6 +2535,9 @@
 
     document.getElementById("chkHeaderBold").checked = decoration.headerBold;
     document.getElementById("colorHeaderFill").value = decoration.headerFillColor ? "#" + decoration.headerFillColor : "#dbe6ff";
+    document.getElementById("colorHeaderFont").value = decoration.headerFontColor ? "#" + decoration.headerFontColor : "#1c2433";
+    document.getElementById("colorCellFill").value = decoration.cellFillColor ? "#" + decoration.cellFillColor : "#ffffff";
+    document.getElementById("chkCellBorders").checked = decoration.cellBorders;
     document.getElementById("chkFreezeHeader").checked = decoration.freezeHeader;
 
     var deletedBar = document.getElementById("previewDeletedBar");
@@ -2586,7 +2688,8 @@
   // piece here is skipped independently when untouched, so a user who
   // never opens the decoration toolbar gets a sheet with none of `!cols`,
   // cell `.s`, or cell `.z` set at all, identical to the export before this
-  // feature existed.
+  // feature existed. Borders/fills are applied to the table region only
+  // (header row + data rows), never to the title block above it.
   function applyExportDecorationToSheet(ws, exportColumns, data, decoration, headerRowIndex0) {
     var hasCustomWidths = Object.keys(decoration.columnWidths).length > 0;
     if (hasCustomWidths) {
@@ -2596,26 +2699,71 @@
       });
     }
 
-    if (decoration.headerBold || decoration.headerFillColor) {
+    // Excel's "All Borders": a thin black border on every side of every
+    // table cell. Shared by the header and data cell styles below.
+    var borderStyle = decoration.cellBorders ? {
+      top: { style: "thin", color: { rgb: "000000" } },
+      bottom: { style: "thin", color: { rgb: "000000" } },
+      left: { style: "thin", color: { rgb: "000000" } },
+      right: { style: "thin", color: { rgb: "000000" } }
+    } : null;
+
+    if (decoration.headerBold || decoration.headerFillColor || decoration.headerFontColor || borderStyle) {
       var headerStyle = {};
-      if (decoration.headerBold) headerStyle.font = { bold: true };
+      if (decoration.headerBold || decoration.headerFontColor) {
+        headerStyle.font = {};
+        if (decoration.headerBold) headerStyle.font.bold = true;
+        // 8-digit ARGB: xlsx-js-style prepends the FF alpha for fill
+        // colours but writes font colours verbatim, and OOXML wants ARGB.
+        if (decoration.headerFontColor) headerStyle.font.color = { rgb: "FF" + decoration.headerFontColor };
+      }
       if (decoration.headerFillColor) headerStyle.fill = { fgColor: { rgb: decoration.headerFillColor } };
+      if (borderStyle) headerStyle.border = borderStyle;
       for (var c = 0; c <= exportColumns.length; c++) {
         var addr = XLSX.utils.encode_cell({ r: headerRowIndex0, c: c });
         if (ws[addr]) ws[addr].s = headerStyle;
       }
     }
 
+    var dataStyle = null;
+    if (decoration.cellFillColor || borderStyle) {
+      dataStyle = {};
+      if (decoration.cellFillColor) dataStyle.fill = { fgColor: { rgb: decoration.cellFillColor } };
+      if (borderStyle) dataStyle.border = borderStyle;
+    }
+
+    var formatByColIdx = {};
     exportColumns.forEach(function (colName, idx) {
       var fmtKey = decoration.numberFormats[colName];
       var fmtCode = fmtKey && NUMBER_FORMAT_CODES[fmtKey];
-      if (!fmtCode) return;
-      var colIdx = idx + 1; // +1 for the S.No. column
-      for (var r = 0; r < data.rows.length; r++) {
-        var addr = XLSX.utils.encode_cell({ r: headerRowIndex0 + 1 + r, c: colIdx });
-        if (ws[addr]) ws[addr].z = fmtCode;
-      }
+      if (fmtCode) formatByColIdx[idx + 1] = fmtCode; // +1 for the S.No. column
     });
+
+    if (dataStyle || Object.keys(formatByColIdx).length) {
+      for (var r = 0; r < data.rows.length; r++) {
+        for (var c2 = 0; c2 <= exportColumns.length; c2++) {
+          var addr2 = XLSX.utils.encode_cell({ r: headerRowIndex0 + 1 + r, c: c2 });
+          var cell = ws[addr2];
+          if (!cell) continue;
+          var fmt = formatByColIdx[c2];
+          if (fmt) cell.z = fmt;
+          if (dataStyle) {
+            // xlsx-js-style derives a styled cell's number format from
+            // s.numFmt, so when a cell has both a style and a format the
+            // format must ride along inside the style object — .z alone
+            // is only honoured on style-less cells.
+            if (fmt) {
+              var styled = { numFmt: fmt };
+              if (dataStyle.fill) styled.fill = dataStyle.fill;
+              if (dataStyle.border) styled.border = dataStyle.border;
+              cell.s = styled;
+            } else {
+              cell.s = dataStyle;
+            }
+          }
+        }
+      }
+    }
   }
 
   // onDone(true) once the file has actually been handed to the browser for
