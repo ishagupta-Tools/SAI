@@ -517,6 +517,18 @@ html, body {
   cursor: pointer;
 }
 .date-format-wrap .hint { margin: 10px 0 0; }
+#statusColumnSelect {
+  padding: 7px 8px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  margin-bottom: 12px;
+}
+.status-values-list { display: flex; flex-direction: column; gap: 8px; }
+.status-value-row { display: flex; align-items: center; gap: 12px; }
+.status-value-row__label { min-width: 220px; font-size: 13px; }
+.status-value-row__count { color: var(--color-muted); font-size: 12px; }
 
 /* Missing columns (defaults for a Report Type's second+ file) */
 .missing-columns-wrap {
