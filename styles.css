@@ -110,9 +110,52 @@ html, body {
 }
 .home-header {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   margin-bottom: 36px;
 }
+.home-header__backup { display: flex; gap: 10px; }
+.express-run {
+  border: 1px solid #b7e0c8;
+  background: #f0faf4;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 14px 0 0;
+}
+.express-run__text { margin: 0 0 12px; font-size: 13px; color: #14532d; }
+.express-run__note { margin: 10px 0 0; font-size: 12px; color: var(--color-muted); }
+.error-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 560px;
+  padding: 12px 16px;
+  background: #7f1d1d;
+  color: #fff;
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  line-height: 1.4;
+  z-index: 200;
+}
+.error-toast[hidden] { display: none; }
+.error-toast__close {
+  border: none;
+  background: none;
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.btn--sm { padding: 5px 12px; font-size: 12px; }
+#backupMsg { max-width: 640px; margin: -20px auto 24px; text-align: center; }
+.modal__backup-nudge { margin-top: -10px; }
 .home-templates {
   background: var(--color-card);
   border-radius: var(--radius);
@@ -454,6 +497,26 @@ html, body {
   margin-bottom: 6px;
 }
 .columns-table input.column-rename-new { margin-top: 0; }
+
+/* Date format confirmation (columns screen, shown when a date column is marked) */
+.date-format-wrap {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 20px;
+  background: #fafbfd;
+}
+.date-format-wrap h3 { margin: 0 0 4px; font-size: 14px; }
+.date-format-wrap .muted { margin-bottom: 12px; }
+.date-format-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.date-format-wrap .hint { margin: 10px 0 0; }
 
 /* Missing columns (defaults for a Report Type's second+ file) */
 .missing-columns-wrap {
