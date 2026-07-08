@@ -50,7 +50,13 @@
     <div class="home-wrap">
       <div class="home-header">
         <button class="btn btn--primary btn--lg" id="btnHomeNewUpload" type="button">+ New Upload</button>
+        <div class="home-header__backup">
+          <button class="btn btn--sm" id="btnDownloadBackup" type="button">Download backup</button>
+          <button class="btn btn--sm" id="btnRestoreBackup" type="button">Restore from backup</button>
+          <input type="file" id="backupFileInput" accept=".json,application/json" hidden />
+        </div>
       </div>
+      <p id="backupMsg" hidden></p>
 
       <div class="home-templates" id="progressSection" hidden>
         <div class="home-templates__header">
@@ -90,6 +96,13 @@
       </label>
       <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" hidden />
       <p class="error" id="uploadError" hidden></p>
+
+      <div class="express-run" id="expressRunWrap" hidden>
+        <p class="express-run__text" id="expressRunText"></p>
+        <button class="btn btn--primary" id="btnExpressRun" type="button">Use saved setup &rarr; Preview</button>
+        <p class="express-run__note">or click Continue below to review each step.</p>
+      </div>
+
       <div class="actions">
         <button class="btn" id="btnUploadBack" type="button">Back</button>
         <button class="btn btn--primary" id="btnUploadContinue" type="button" disabled>Continue</button>
@@ -220,6 +233,24 @@
           </thead>
           <tbody id="columnsTableBody"></tbody>
         </table>
+      </div>
+
+      <div class="date-format-wrap" id="dateFormatWrap" hidden>
+        <h3>Date format</h3>
+        <p class="muted" id="dateFormatQuestion"></p>
+        <label class="date-format-option">
+          <input type="radio" name="dateFormatChoice" value="dayfirst" />
+          DD/MM/YYYY — day first (common in Indian files)
+        </label>
+        <label class="date-format-option">
+          <input type="radio" name="dateFormatChoice" value="monthfirst" />
+          MM/DD/YYYY — month first
+        </label>
+        <label class="date-format-option">
+          <input type="radio" name="dateFormatChoice" value="excel" />
+          Excel date cells (detected automatically)
+        </label>
+        <p class="hint" id="dateFormatHint">Dates will be standardised to DD/MM/YYYY in the final report, whatever format they arrive in.</p>
       </div>
 
       <div class="missing-columns-wrap" id="missingColumnsWrap" hidden>
@@ -384,10 +415,17 @@
 
 </main>
 
+<!-- GLOBAL ERROR TOAST -->
+<div class="error-toast" id="errorToast" hidden>
+  <span id="errorToastText"></span>
+  <button class="error-toast__close" id="errorToastClose" type="button" title="Dismiss">&times;</button>
+</div>
+
 <!-- START OVER CONFIRMATION -->
 <div class="modal-overlay" id="startOverModal" hidden>
   <div class="modal">
     <p>This will permanently delete all data, templates and reports in progress. This cannot be undone. Are you sure?</p>
+    <p class="modal__backup-nudge"><button class="link-btn" id="btnStartOverBackup" type="button">Download a backup first</button></p>
     <div class="modal__actions">
       <button class="btn" id="btnStartOverCancel" type="button">Cancel</button>
       <button class="btn btn--danger" id="btnStartOverConfirm" type="button">Yes, delete everything</button>
