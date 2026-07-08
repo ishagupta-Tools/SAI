@@ -1677,12 +1677,24 @@
     columnsTableBody.querySelectorAll(".column-include").forEach(function (cb) { cb.checked = false; });
     updateMissingColumnsSection();
   });
-  // Delegated so it also covers the include checkbox and rename dropdown of
+  // Delegated so it also covers the include checkbox and rename controls of
   // every row, which are (re)created fresh each time renderColumnScreen()
-  // runs — any change that could affect which Master Report columns this
-  // file no longer covers should refresh the missing-columns list live.
+  // runs — any change that could affect which expected columns this file no
+  // longer covers should refresh the missing-columns list live. The rename
+  // can be a dropdown pick (.column-rename-select) or typed text
+  // (.column-rename — the plain box on a new Master Report, and the
+  // "+ Add new column…" name box); typed text also gets an input listener
+  // so a mapped column disappears from the list as it's typed, not only
+  // after the field blurs.
   columnsTableBody.addEventListener("change", function (e) {
-    if (e.target.classList.contains("column-include") || e.target.classList.contains("column-rename-select")) {
+    if (e.target.classList.contains("column-include") ||
+        e.target.classList.contains("column-rename-select") ||
+        e.target.classList.contains("column-rename")) {
+      updateMissingColumnsSection();
+    }
+  });
+  columnsTableBody.addEventListener("input", function (e) {
+    if (e.target.classList.contains("column-rename")) {
       updateMissingColumnsSection();
     }
   });
@@ -2642,9 +2654,15 @@
     var exportColumns = data ? getEffectiveExportColumns(state.selectedReportType, data.columns) : [];
     var decoration = getExportDecorationFor(state.selectedReportType);
 
+    var allRows = data ? data.rows : [];
+    var deletedRowCount = 0;
+    allRows.forEach(function (r) { if (r.__saiDeleted) deletedRowCount++; });
+
     document.getElementById("previewMasterReportName").textContent = state.selectedMasterReport;
     document.getElementById("previewMeta").textContent =
-      (data ? data.rows.length : 0) + " total rows · Updated " + formatDateForDisplay(data ? data.lastUpdated : null);
+      (allRows.length - deletedRowCount) + " total rows" +
+      (deletedRowCount ? " (" + deletedRowCount + " deleted from export)" : "") +
+      " · Updated " + formatDateForDisplay(data ? data.lastUpdated : null);
 
     var chips = document.getElementById("previewReportTypeChips");
     chips.innerHTML = "";
@@ -2666,7 +2684,7 @@
 
     var deletedBar = document.getElementById("previewDeletedBar");
     deletedBar.innerHTML = "";
-    deletedBar.hidden = decoration.deletedColumns.length === 0;
+    deletedBar.hidden = decoration.deletedColumns.length === 0 && deletedRowCount === 0;
     if (decoration.deletedColumns.length) {
       deletedBar.appendChild(document.createTextNode("Deleted from export: "));
       decoration.deletedColumns.forEach(function (col, idx) {
@@ -2684,6 +2702,23 @@
         });
         deletedBar.appendChild(restoreBtn);
       });
+    }
+    if (deletedRowCount) {
+      if (decoration.deletedColumns.length) deletedBar.appendChild(document.createTextNode(" · "));
+      deletedBar.appendChild(document.createTextNode(
+        deletedRowCount + " row" + (deletedRowCount === 1 ? "" : "s") + " deleted from export "
+      ));
+      var restoreRowsBtn = document.createElement("button");
+      restoreRowsBtn.type = "button";
+      restoreRowsBtn.className = "link-btn";
+      restoreRowsBtn.textContent = "(restore all rows)";
+      restoreRowsBtn.addEventListener("click", function () {
+        var fresh = getMasterReportData(state.selectedMasterReport);
+        fresh.rows.forEach(function (r) { delete r.__saiDeleted; });
+        saveMasterReportData(state.selectedMasterReport, fresh);
+        renderPreviewScreen();
+      });
+      deletedBar.appendChild(restoreRowsBtn);
     }
 
     var colgroup = document.getElementById("previewTableColgroup");
@@ -2714,15 +2749,36 @@
 
     var body = document.getElementById("previewTableBody");
     body.innerHTML = "";
+    clearPreviewRowSelection();
     // The full merged dataset is shown (not a capped preview) — the
     // surrounding .header-row-preview-wrap already scrolls both ways with a
-    // sticky header row, which is what makes that viable.
-    var previewRows = data ? data.rows : [];
-    previewRows.forEach(function (row, idx) {
+    // sticky header row, which is what makes that viable. Rows flagged
+    // __saiDeleted are skipped here and in the export, but stay in the
+    // stored data (restorable via the deleted bar), so deleting rows never
+    // destroys the merged data itself. dataset.rowIndex keeps each visible
+    // row tied to its position in data.rows; dataset.visIndex is its
+    // position in the visible sequence, used for drag-range selection.
+    var visIdx = 0;
+    allRows.forEach(function (row, actualIdx) {
+      if (row.__saiDeleted) return;
       var tr = document.createElement("tr");
+      tr.dataset.rowIndex = String(actualIdx);
+      tr.dataset.visIndex = String(visIdx);
+
       var tdSno = document.createElement("td");
-      tdSno.textContent = String(idx + 1);
+      tdSno.className = "preview-sno-cell";
+      tdSno.title = "Click to select this row, drag down to select several";
+      var num = document.createElement("span");
+      num.textContent = String(visIdx + 1);
+      tdSno.appendChild(num);
+      var rowDelBtn = document.createElement("button");
+      rowDelBtn.type = "button";
+      rowDelBtn.className = "preview-row-delete";
+      rowDelBtn.title = "Delete this row from the export (restorable below)";
+      rowDelBtn.textContent = "×";
+      tdSno.appendChild(rowDelBtn);
       tr.appendChild(tdSno);
+
       exportColumns.forEach(function (c) {
         var td = document.createElement("td");
         var v = row[c];
@@ -2730,8 +2786,96 @@
         tr.appendChild(td);
       });
       body.appendChild(tr);
+      visIdx++;
     });
   }
+
+  /* --- Preview row selection & deletion ---------------------------------
+   * Excel-style: click a row's S.No. cell to select it, or press and drag
+   * down/up through the S.No. column to select a range, then delete the
+   * whole selection from the bar above the table. Each row's own × deletes
+   * just that row. Deletion only flags the stored row (__saiDeleted) — the
+   * preview and the exported file skip flagged rows, the merged data keeps
+   * them, and "(restore all rows)" in the deleted bar clears the flags.
+   * ------------------------------------------------------------------- */
+  var previewTableBodyEl = document.getElementById("previewTableBody");
+  var previewRowSelecting = false;
+  var previewRowAnchor = -1; // visIndex where the current drag started
+
+  function updatePreviewRowHighlight(extentVisIdx) {
+    var lo = Math.min(previewRowAnchor, extentVisIdx);
+    var hi = Math.max(previewRowAnchor, extentVisIdx);
+    previewTableBodyEl.querySelectorAll("tr").forEach(function (tr) {
+      var v = parseInt(tr.dataset.visIndex, 10);
+      tr.classList.toggle("preview-row--selected", v >= lo && v <= hi);
+    });
+  }
+
+  function selectedPreviewRowIndices() {
+    var out = [];
+    previewTableBodyEl.querySelectorAll("tr.preview-row--selected").forEach(function (tr) {
+      out.push(parseInt(tr.dataset.rowIndex, 10));
+    });
+    return out;
+  }
+
+  function updatePreviewRowSelectionBar() {
+    var count = previewTableBodyEl.querySelectorAll("tr.preview-row--selected").length;
+    document.getElementById("previewRowSelectionBar").hidden = count === 0;
+    document.getElementById("previewRowSelectionCount").textContent =
+      count + " row" + (count === 1 ? "" : "s") + " selected";
+  }
+
+  function clearPreviewRowSelection() {
+    previewRowSelecting = false;
+    previewRowAnchor = -1;
+    previewTableBodyEl.querySelectorAll("tr.preview-row--selected").forEach(function (tr) {
+      tr.classList.remove("preview-row--selected");
+    });
+    document.getElementById("previewRowSelectionBar").hidden = true;
+  }
+
+  function deletePreviewRowsByIndex(actualIndices) {
+    if (!actualIndices.length) return;
+    var data = getMasterReportData(state.selectedMasterReport);
+    actualIndices.forEach(function (i) {
+      if (data.rows[i]) data.rows[i].__saiDeleted = true;
+    });
+    saveMasterReportData(state.selectedMasterReport, data);
+    renderPreviewScreen();
+  }
+
+  previewTableBodyEl.addEventListener("mousedown", function (e) {
+    if (e.button !== 0 || e.target.closest(".preview-row-delete")) return;
+    var sno = e.target.closest(".preview-sno-cell");
+    if (!sno) return;
+    e.preventDefault(); // keep the drag from text-selecting the table
+    previewRowSelecting = true;
+    previewRowAnchor = parseInt(sno.parentNode.dataset.visIndex, 10);
+    updatePreviewRowHighlight(previewRowAnchor);
+    updatePreviewRowSelectionBar();
+  });
+  previewTableBodyEl.addEventListener("mouseover", function (e) {
+    if (!previewRowSelecting) return;
+    var tr = e.target.closest("tr");
+    if (!tr || tr.parentNode !== previewTableBodyEl) return;
+    updatePreviewRowHighlight(parseInt(tr.dataset.visIndex, 10));
+    updatePreviewRowSelectionBar();
+  });
+  document.addEventListener("mouseup", function () {
+    previewRowSelecting = false;
+  });
+
+  previewTableBodyEl.addEventListener("click", function (e) {
+    var btn = e.target.closest(".preview-row-delete");
+    if (!btn) return;
+    deletePreviewRowsByIndex([parseInt(btn.closest("tr").dataset.rowIndex, 10)]);
+  });
+
+  document.getElementById("btnPreviewDeleteRows").addEventListener("click", function () {
+    deletePreviewRowsByIndex(selectedPreviewRowIndices());
+  });
+  document.getElementById("btnPreviewClearRowSelection").addEventListener("click", clearPreviewRowSelection);
 
   // Undoes the merge that just ran (see the preMergeSnapshot capture in
   // btnFormulaNext) so the Formula screen's Next button can perform one
@@ -2900,7 +3044,10 @@
   // value, since the freeze-header path above is asynchronous.
   function generateMasterReportExport(onDone) {
     var data = getMasterReportData(state.selectedMasterReport);
-    if (!data || !data.rows.length) {
+    // Rows deleted on the Preview screen stay in the stored data but are
+    // flagged __saiDeleted — the export must skip them, same as the preview.
+    var activeRows = data ? data.rows.filter(function (r) { return !r.__saiDeleted; }) : [];
+    if (!activeRows.length) {
       alert("No data to export yet.");
       onDone(false);
       return;
@@ -2913,11 +3060,11 @@
     aoa.push([state.companyName || ""]);
     aoa.push([state.selectedMasterReport]);
     aoa.push(["Date generated: " + todayText]);
-    aoa.push(["Period covered: " + computePeriodCoveredText(data.rows)]);
+    aoa.push(["Period covered: " + computePeriodCoveredText(activeRows)]);
     aoa.push([]);
     var headerRowIndex0 = aoa.length; // row index of the header row, 0-based
     aoa.push(["S.No."].concat(exportColumns));
-    data.rows.forEach(function (row, idx) {
+    activeRows.forEach(function (row, idx) {
       aoa.push([idx + 1].concat(exportColumns.map(function (c) {
         var v = row[c];
         return v === undefined || v === null ? "" : v;
