@@ -1310,6 +1310,12 @@
   var columnsMismatchBanner = document.getElementById("columnsMismatchBanner");
   var columnsMismatchText = document.getElementById("columnsMismatchText");
   var columnsAutofillNote = document.getElementById("columnsAutofillNote");
+  var columnsErrorMsg = document.getElementById("columnsErrorMsg");
+
+  function showColumnsError(message) {
+    columnsErrorMsg.textContent = message;
+    columnsErrorMsg.hidden = false;
+  }
 
   // Case-insensitive lookup of a saved column-structure entry for a given
   // current-file header — the same file re-exported later can vary in
@@ -1326,6 +1332,7 @@
     document.getElementById("columnsReportType").textContent = state.selectedReportType;
     columnsAutofillNote.hidden = true;
     columnsMismatchBanner.hidden = true;
+    columnsErrorMsg.hidden = true;
 
     console.log("[SAI] Rendering column screen from currentFileHeaders:", currentFileHeaders);
 
@@ -1490,6 +1497,19 @@
     return plainInput.value.trim() || header;
   }
 
+  // Final (renamed) names of every column currently ticked in the table —
+  // read live from the DOM so checkbox/rename changes are reflected
+  // immediately. These are the columns a missing-column formula may use.
+  function getIncludedRenamedColumns() {
+    var cols = [];
+    columnsTableBody.querySelectorAll("tr").forEach(function (tr) {
+      var checkbox = tr.querySelector(".column-include");
+      if (!checkbox.checked) return;
+      cols.push(getRenameToForRow(tr, tr.dataset.header));
+    });
+    return cols;
+  }
+
   // Any column expected for this upload that the current file doesn't map
   // onto (because it has no matching/included header) is offered here so
   // the user can fill every row of THIS file with one default value
@@ -1538,40 +1558,112 @@
       return;
     }
 
-    var previousValues = {};
-    list.querySelectorAll(".missing-column-value").forEach(function (input) {
-      previousValues[input.dataset.column] = input.value;
+    var previousEntries = {};
+    list.querySelectorAll(".missing-column-row").forEach(function (r) {
+      previousEntries[r.dataset.column] = {
+        mode: r.dataset.mode || "fixed",
+        fixed: r.querySelector(".missing-column-value").value,
+        expr: r.querySelector(".missing-column-formula-input").value
+      };
     });
 
-    var covered = [];
-    columnsTableBody.querySelectorAll("tr").forEach(function (tr) {
-      var checkbox = tr.querySelector(".column-include");
-      if (!checkbox.checked) return;
-      covered.push(getRenameToForRow(tr, tr.dataset.header).toLowerCase());
-    });
+    var covered = getIncludedRenamedColumns().map(function (c) { return c.toLowerCase(); });
 
     var missing = expectedColumns.filter(function (c) { return covered.indexOf(c.toLowerCase()) === -1; });
 
     wrap.hidden = missing.length === 0;
     list.innerHTML = "";
-    hint.textContent = "These columns aren't in this file. Enter a value to fill every row of this file, or leave blank.";
+    hint.textContent = "These columns aren't in this file. Fill every row of this file with a fixed value or a formula built from this file's columns, or leave blank.";
 
     missing.forEach(function (col) {
+      var prev = previousEntries[col] || { mode: "fixed", fixed: "", expr: "" };
+
       var row = document.createElement("div");
       row.className = "missing-column-row";
+      row.dataset.column = col;
 
       var name = document.createElement("span");
       name.className = "missing-column-row__name";
       name.textContent = col;
       row.appendChild(name);
 
+      var editor = document.createElement("div");
+      editor.className = "missing-column-editor";
+      row.appendChild(editor);
+
+      var modeBar = document.createElement("div");
+      modeBar.className = "missing-column-mode";
+      var fixedBtn = document.createElement("button");
+      fixedBtn.type = "button";
+      fixedBtn.className = "missing-column-mode__btn";
+      fixedBtn.textContent = "Fixed value";
+      modeBar.appendChild(fixedBtn);
+      var formulaBtn = document.createElement("button");
+      formulaBtn.type = "button";
+      formulaBtn.className = "missing-column-mode__btn";
+      formulaBtn.textContent = "Formula";
+      modeBar.appendChild(formulaBtn);
+      editor.appendChild(modeBar);
+
       var input = document.createElement("input");
       input.type = "text";
       input.className = "missing-column-value";
       input.dataset.column = col;
       input.placeholder = "Default value for every row (text or number)";
-      if (Object.prototype.hasOwnProperty.call(previousValues, col)) input.value = previousValues[col];
-      row.appendChild(input);
+      input.value = prev.fixed;
+      editor.appendChild(input);
+
+      // Formula mode — the exact same bar + autocomplete + pill preview as
+      // the Formula Builder, but its available columns are the columns this
+      // file will actually produce (ticked + renamed), read live.
+      var formulaWrap = document.createElement("div");
+      formulaWrap.className = "missing-column-formula";
+
+      var exprBar = document.createElement("div");
+      exprBar.className = "formula-expr-bar";
+      var prefix = document.createElement("span");
+      prefix.className = "formula-expr-prefix";
+      prefix.textContent = "=";
+      exprBar.appendChild(prefix);
+      var exprInput = document.createElement("input");
+      exprInput.type = "text";
+      exprInput.className = "formula-expr-input missing-column-formula-input";
+      exprInput.placeholder = "e.g. CONCATENATE(Order ID, \"-\", Sku)";
+      exprInput.autocomplete = "off";
+      exprInput.value = prev.expr;
+      exprBar.appendChild(exprInput);
+      var dropdown = document.createElement("div");
+      dropdown.className = "formula-autocomplete";
+      dropdown.hidden = true;
+      exprBar.appendChild(dropdown);
+      formulaWrap.appendChild(exprBar);
+
+      var previewEl = document.createElement("div");
+      previewEl.className = "formula-expr-preview";
+      formulaWrap.appendChild(previewEl);
+      editor.appendChild(formulaWrap);
+
+      function getAvailable() {
+        var result = getIncludedRenamedColumns().map(function (c) { return { name: c, origin: state.selectedReportType }; });
+        result.push({ name: "CONCATENATE", origin: "function" });
+        return result;
+      }
+      function refreshPreview() {
+        renderExpressionPreview(previewEl, exprInput.value, getIncludedRenamedColumns());
+      }
+      attachFormulaAutocomplete(exprInput, dropdown, getAvailable, refreshPreview);
+      refreshPreview();
+
+      function applyMode(mode) {
+        row.dataset.mode = mode;
+        fixedBtn.classList.toggle("missing-column-mode__btn--active", mode === "fixed");
+        formulaBtn.classList.toggle("missing-column-mode__btn--active", mode === "formula");
+        input.hidden = mode !== "fixed";
+        formulaWrap.hidden = mode !== "formula";
+      }
+      fixedBtn.addEventListener("click", function () { applyMode("fixed"); });
+      formulaBtn.addEventListener("click", function () { applyMode("formula"); });
+      applyMode(prev.mode);
 
       list.appendChild(row);
     });
@@ -1630,16 +1722,42 @@
     currentRenamedRows = buildRenamedRows(currentFileRows, structure);
 
     // Any Master Report column left unmapped by this file (see
-    // updateMissingColumnsSection) gets the value the user typed stamped
-    // onto every row of this file, and is tracked as a real column for this
-    // upload too — same as if the file had actually contained it.
-    document.querySelectorAll("#missingColumnsList .missing-column-value").forEach(function (input) {
-      var value = input.value.trim();
-      if (!value) return;
-      var col = input.dataset.column;
-      currentRenamedRows.forEach(function (row) { row[col] = value; });
+    // updateMissingColumnsSection) gets stamped onto every row of this
+    // file — either the fixed value the user typed, or a per-row value
+    // computed from this file's own columns in formula mode — and is
+    // tracked as a real column for this upload too, same as if the file
+    // had actually contained it. A bad formula blocks Next with an error;
+    // returning early is safe because every click of Next rebuilds
+    // currentRenamedRows from scratch above.
+    columnsErrorMsg.hidden = true;
+    var missingRows = document.querySelectorAll("#missingColumnsList .missing-column-row");
+    for (var m = 0; m < missingRows.length; m++) {
+      var mRow = missingRows[m];
+      var col = mRow.dataset.column;
+      if (mRow.dataset.mode === "formula") {
+        var expr = mRow.querySelector(".missing-column-formula-input").value.trim();
+        if (!expr) continue;
+        var tokens = tokenizeExpression(expr, selectedColumns);
+        var unknownTok = tokens.find(function (t) { return t.type === "unknown"; });
+        if (unknownTok) {
+          showColumnsError("The formula for \"" + col + "\" uses an unknown column \"" + unknownTok.value + "\". Only columns ticked above can be used — check the spelling or pick from the autocomplete list.");
+          return;
+        }
+        var ast;
+        try {
+          ast = parseExpressionTokens(tokens);
+        } catch (err) {
+          showColumnsError("The formula for \"" + col + "\" has an invalid expression: " + err.message);
+          return;
+        }
+        currentRenamedRows.forEach(function (row) { row[col] = computeExpressionValue(row, ast); });
+      } else {
+        var value = mRow.querySelector(".missing-column-value").value.trim();
+        if (!value) continue;
+        currentRenamedRows.forEach(function (row) { row[col] = value; });
+      }
       if (selectedColumns.indexOf(col) === -1) selectedColumns.push(col);
-    });
+    }
 
     state.selectedColumns = selectedColumns;
     // Store the renamed key (not the original header) so the merge step
@@ -1964,7 +2082,11 @@
   // comma boundary is what makes each CONCATENATE argument its own operand
   // — without it, the second argument's partial spans back to the "(" and
   // never matches anything, silently killing suggestions mid-function.
-  function attachFormulaAutocomplete(row, input, dropdown) {
+  // getAvailable supplies the {name, origin} candidates (called fresh on
+  // every keystroke) and onChanged fires after any programmatic edit, so
+  // the same bar works on both the Formula Builder and the missing-columns
+  // section of the column screen.
+  function attachFormulaAutocomplete(input, dropdown, getAvailable, onChanged) {
     var activeIndex = -1;
     var OPERAND_BOUNDARY_CHARS = "+-*/(),";
 
@@ -1985,7 +2107,7 @@
     function showSuggestions() {
       var bounds = operandBounds();
       var partial = input.value.slice(bounds.start, bounds.pos).trim().toLowerCase();
-      var available = getAvailableColumnsForFormulaRow(row);
+      var available = getAvailable();
       // No cap here — every selected/renamed source column and every other
       // in-progress formula name must stay reachable (the dropdown already
       // scrolls via max-height in CSS), otherwise columns past whatever
@@ -2029,12 +2151,12 @@
       var newPos = before.length + caretOffset;
       input.setSelectionRange(newPos, newPos);
       dropdown.hidden = true;
-      refreshFormulaPreview(row);
+      onChanged();
       input.focus();
     }
 
     input.addEventListener("input", function () {
-      refreshFormulaPreview(row);
+      onChanged();
       showSuggestions();
     });
     input.addEventListener("focus", showSuggestions);
@@ -2167,7 +2289,9 @@
     formulaList.appendChild(row);
 
     makeFormulaRowDraggable(row, dragHandle);
-    attachFormulaAutocomplete(row, exprInput, dropdown);
+    attachFormulaAutocomplete(exprInput, dropdown,
+      function () { return getAvailableColumnsForFormulaRow(row); },
+      function () { refreshFormulaPreview(row); });
     refreshFormulaPreview(row);
 
     updateFormulaEmptyState();
@@ -2694,8 +2818,12 @@
     var hasCustomWidths = Object.keys(decoration.columnWidths).length > 0;
     if (hasCustomWidths) {
       var widthKeys = [EXPORT_SNO_KEY].concat(exportColumns);
+      // Columns the user never resized must be null, not {} — the library
+      // writes {} as <col min max> with no width attribute, which Excel
+      // renders as a zero-width (hidden-looking) column. Null entries are
+      // skipped entirely, leaving those columns at Excel's default width.
       ws["!cols"] = widthKeys.map(function (key) {
-        return decoration.columnWidths[key] ? { wch: pxToExcelChars(decoration.columnWidths[key]) } : {};
+        return decoration.columnWidths[key] ? { wch: pxToExcelChars(decoration.columnWidths[key]) } : null;
       });
     }
 
