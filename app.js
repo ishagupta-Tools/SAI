@@ -13,6 +13,7 @@
     headerRowPreference: "sai_header_row_preference",
     formulas: "sai_formulas",
     dateColumnPreference: "sai_date_column_preference",
+    dateFormatPreference: "sai_date_format_preference",
     masterReportData: "sai_master_report_data",
     setupProgress: "sai_setup_progress",
     columnOrder: "sai_column_order",
@@ -155,6 +156,20 @@
     var all = loadJSON(STORAGE_KEYS.dateColumnPreference, {});
     all[reportType] = originalHeaderOrNull;
     saveJSON(STORAGE_KEYS.dateColumnPreference, all);
+  }
+
+  // The user-confirmed date format for this Report Type's date column:
+  // "dayfirst" (DD/MM/YYYY), "monthfirst" (MM/DD/YYYY) or "excel"
+  // (native Excel date cells). Saved from the column screen's format
+  // confirmation so next month it's preselected instead of asked again.
+  function getDateFormatPreference(reportType) {
+    var all = loadJSON(STORAGE_KEYS.dateFormatPreference, {});
+    return all[reportType] || null;
+  }
+  function saveDateFormatPreferenceFor(reportType, format) {
+    var all = loadJSON(STORAGE_KEYS.dateFormatPreference, {});
+    all[reportType] = format;
+    saveJSON(STORAGE_KEYS.dateFormatPreference, all);
   }
 
   // The actual accumulated dataset for a Master Report: a union of every
@@ -315,10 +330,102 @@
     clearSetupProgress(masterReportName, reportTypeName);
   }
 
-  function parseDateSafe(value) {
-    if (value === "" || value === null || value === undefined) return null;
-    var d = new Date(value);
-    return isNaN(d.getTime()) ? null : d.toISOString();
+  /* --- Date column parsing ----------------------------------------------
+   * Turning the marked date column into __saiDate has to survive what
+   * marketplace files actually contain:
+   *   - Excel-native date cells arrive as SERIAL NUMBERS because files are
+   *     read with raw:true (e.g. 46216) — new Date(46216) is Jan 1970.
+   *   - Indian reports write day-first text ("13/07/2026") — new Date()
+   *     either misreads it as month-first or rejects it outright.
+   * buildDateParserFor scans the whole column once per merge to decide how
+   * to read it (serial vs text; day-first vs month-first, proven by any
+   * value whose first part exceeds 12, defaulting to day-first), then
+   * parses every row with that one decision instead of guessing per cell.
+   * ------------------------------------------------------------------- */
+  var EXCEL_EPOCH_OFFSET_DAYS = 25569; // Excel serial for 1970-01-01
+
+  function excelSerialToISO(serial) {
+    // Sanity window ~1954–2118: a number outside it isn't a date serial.
+    if (serial < 20000 || serial >= 80000) return null;
+    return new Date(Math.round((serial - EXCEL_EPOCH_OFFSET_DAYS) * 86400000)).toISOString();
+  }
+
+  var DATE_TRIPLE_RE = /^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+
+  function parseTripleDate(str, dayFirst) {
+    var m = DATE_TRIPLE_RE.exec(str);
+    if (!m) return null;
+    var a = parseInt(m[1], 10), b = parseInt(m[2], 10), c = parseInt(m[3], 10);
+    var year, month, day;
+    if (m[1].length === 4) { year = a; month = b; day = c; }
+    else {
+      year = c < 100 ? 2000 + c : c;
+      if (dayFirst) { day = a; month = b; } else { month = a; day = b; }
+    }
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    var d = new Date(Date.UTC(year, month - 1, day,
+      parseInt(m[4] || "0", 10), parseInt(m[5] || "0", 10), parseInt(m[6] || "0", 10)));
+    // Reject silent rollovers like 31/02 → 3 March.
+    if (d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null;
+    return d.toISOString();
+  }
+
+  // Auto-detection of a date column's format, used only as the DEFAULT
+  // suggestion in the column screen's format confirmation (the user has
+  // the final say — marketplaces differ too much to guess silently).
+  // "proven" means the values themselves settle it: mostly-numeric cells
+  // are Excel serials, and any dd/mm-style value with a first part over 12
+  // proves day-first (second part over 12 proves month-first).
+  function detectDateFormatForColumn(values) {
+    var total = 0, numeric = 0, proven = null;
+    for (var i = 0; i < values.length; i++) {
+      var v = values[i];
+      if (v === "" || v === null || v === undefined) continue;
+      total++;
+      if (typeof v === "number" || /^\d+(\.\d+)?$/.test(String(v).trim())) { numeric++; continue; }
+      var m = DATE_TRIPLE_RE.exec(String(v).trim());
+      if (!m || m[1].length === 4) continue;
+      if (!proven) {
+        if (parseInt(m[1], 10) > 12) proven = "dayfirst";
+        else if (parseInt(m[2], 10) > 12) proven = "monthfirst";
+      }
+    }
+    if (total && numeric > total / 2) return { format: "excel", proven: true };
+    if (proven) return { format: proven, proven: true };
+    return { format: "dayfirst", proven: false }; // ambiguous → Indian default
+  }
+
+  // Every parsed date is standardised to DD/MM/YYYY in the stored rows and
+  // therefore in the preview, the exported cells and the "Period covered"
+  // line — regardless of what format the source file used. Local date
+  // parts, matching how the dates were displayed to the user everywhere
+  // else (en-IN locale).
+  function formatDateDDMMYYYY(d) {
+    if (!(d instanceof Date) || isNaN(d.getTime())) return "";
+    var dd = d.getDate(), mm = d.getMonth() + 1;
+    return (dd < 10 ? "0" : "") + dd + "/" + (mm < 10 ? "0" : "") + mm + "/" + d.getFullYear();
+  }
+
+  function buildDateParserFor(rows, dateColumnKey, formatPreference) {
+    var dayFirst;
+    if (formatPreference === "dayfirst") dayFirst = true;
+    else if (formatPreference === "monthfirst") dayFirst = false;
+    else {
+      // No explicit confirmation ("excel", or older data with none saved):
+      // fall back to auto-detection over the column.
+      dayFirst = detectDateFormatForColumn(rows.map(function (r) { return r[dateColumnKey]; })).format !== "monthfirst";
+    }
+    return function (value) {
+      if (value === "" || value === null || value === undefined) return null;
+      if (typeof value === "number") return excelSerialToISO(value);
+      var str = String(value).trim();
+      if (!str) return null;
+      if (/^\d+(\.\d+)?$/.test(str)) return excelSerialToISO(parseFloat(str));
+      var triple = parseTripleDate(str, dayFirst);
+      if (triple) return triple;
+      var d = new Date(str); // month-name formats ("13 Jul 2026"), ISO with time, …
+      return isNaN(d.getTime()) ? null : d.toISOString();
+    };
   }
 
   // How many rows already stored for this Master Report belong to this
@@ -345,13 +452,21 @@
       if (data.columns.indexOf(c) === -1) data.columns.push(c);
     });
 
+    var parseDateValue = dateColumnKey
+      ? buildDateParserFor(rows, dateColumnKey, getDateFormatPreference(reportTypeName))
+      : null;
     rows.forEach(function (row) {
       var mergedRow = { "Report Type": reportTypeName };
       data.columns.forEach(function (c) {
         if (c === "Report Type") return;
         mergedRow[c] = Object.prototype.hasOwnProperty.call(row, c) ? row[c] : "";
       });
-      mergedRow.__saiDate = dateColumnKey ? parseDateSafe(row[dateColumnKey]) : null;
+      mergedRow.__saiDate = parseDateValue ? parseDateValue(row[dateColumnKey]) : null;
+      // Standardise the date column's visible value to DD/MM/YYYY wherever
+      // it parsed — serials, day-first or month-first text all come out
+      // identical in the preview and the exported file. Unparseable values
+      // keep their original text rather than silently vanishing.
+      if (mergedRow.__saiDate) mergedRow[dateColumnKey] = formatDateDDMMYYYY(new Date(mergedRow.__saiDate));
       data.rows.push(mergedRow);
     });
 
@@ -451,6 +566,35 @@
     selectedDateColumnHeader: "", // renamed key of the marked date column, "" = none
     dataMode: "" // "replace" or "add" — how this upload's rows join any rows already stored for this Report Type
   };
+
+  /* ---------------------------------------------------------------------
+   * Global error surfacing
+   *
+   * Anything that throws uncaught (or rejects unhandled) used to die
+   * silently in the console — the screen just stopped responding with no
+   * clue why. This toast turns that into one honest line the user can act
+   * on or report. Handled failures stay handled; only genuinely
+   * unexpected errors (plus the few caught-but-degraded paths that opt in
+   * by calling showErrorToast directly) surface here.
+   * ------------------------------------------------------------------- */
+  var errorToastTimer = null;
+  function showErrorToast(message) {
+    var toast = document.getElementById("errorToast");
+    document.getElementById("errorToastText").textContent = message;
+    toast.hidden = false;
+    if (errorToastTimer) clearTimeout(errorToastTimer);
+    errorToastTimer = setTimeout(function () { toast.hidden = true; }, 12000);
+  }
+  document.getElementById("errorToastClose").addEventListener("click", function () {
+    document.getElementById("errorToast").hidden = true;
+  });
+  window.addEventListener("error", function (e) {
+    showErrorToast("Something went wrong: " + (e.message || "unknown error") + ". If this keeps happening, take a screenshot and report it.");
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var reason = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+    showErrorToast("Something went wrong: " + reason + ". If this keeps happening, take a screenshot and report it.");
+  });
 
   /* ---------------------------------------------------------------------
    * Screen navigation
@@ -677,6 +821,7 @@
   });
 
   function resetFileState() {
+    uploadExpressPlanPending = null;
     state.fileName = "";
     state.fileSize = 0;
     state.selectedSheetName = "";
@@ -714,6 +859,123 @@
     state.selectedReportType = "";
     renderHomeScreen();
     showScreen("screen-home");
+  });
+
+  /* ---------------------------------------------------------------------
+   * Backup & restore
+   *
+   * The backup file holds every SAI localStorage key exactly as stored
+   * (raw strings, never re-parsed) so a restore round-trips byte-identical
+   * and this code needs no updating when a key's internal shape evolves.
+   * Restore replaces rather than merges: the whole file is validated
+   * before a single key is written, so a bad file can never leave the app
+   * half-restored, and only keys with the sai_ prefix are ever written so
+   * a malformed file can't inject arbitrary browser storage.
+   * ------------------------------------------------------------------- */
+  var BACKUP_MARKER = "sai-backup";
+  var backupFileInput = document.getElementById("backupFileInput");
+
+  function showBackupMessage(text, isError) {
+    var el = document.getElementById("backupMsg");
+    el.textContent = text;
+    el.className = isError ? "error" : "hint";
+    el.hidden = false;
+  }
+
+  function buildBackupObject() {
+    var data = {};
+    Object.keys(STORAGE_KEYS).forEach(function (name) {
+      var raw = localStorage.getItem(STORAGE_KEYS[name]);
+      if (raw !== null) data[STORAGE_KEYS[name]] = raw;
+    });
+    return { app: BACKUP_MARKER, version: 1, createdAt: new Date().toISOString(), data: data };
+  }
+
+  function downloadBackup() {
+    var blob = new Blob([JSON.stringify(buildBackupObject(), null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "SAI-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  // Counts shown in the restore confirmation, read from the backup's own
+  // contents (not the current app state) so the user knows what they're
+  // about to restore before anything is replaced.
+  function describeBackupContents(backup) {
+    var masterReports = 0;
+    var reportTypes = 0;
+    try { masterReports = JSON.parse(backup.data[STORAGE_KEYS.masterReports] || "[]").length; } catch (e) {}
+    try { reportTypes = JSON.parse(backup.data[STORAGE_KEYS.reportTypes] || "[]").length; } catch (e) {}
+    return masterReports + " Master Report" + (masterReports === 1 ? "" : "s") +
+      ", " + reportTypes + " Report Type" + (reportTypes === 1 ? "" : "s");
+  }
+
+  function restoreFromBackupFile(file) {
+    var reader = new FileReader();
+    reader.onerror = function () {
+      showBackupMessage("Could not read \"" + file.name + "\".", true);
+    };
+    reader.onload = function (event) {
+      var backup;
+      try {
+        backup = JSON.parse(event.target.result);
+      } catch (err) {
+        showBackupMessage("\"" + file.name + "\" is not a valid backup file (not readable as JSON). Nothing was changed.", true);
+        return;
+      }
+      if (!backup || backup.app !== BACKUP_MARKER || !backup.data || typeof backup.data !== "object") {
+        showBackupMessage("\"" + file.name + "\" is not a SAI backup file. Nothing was changed.", true);
+        return;
+      }
+      if (backup.version !== 1) {
+        showBackupMessage("This backup was made by a newer version of SAI and can't be restored here. Nothing was changed.", true);
+        return;
+      }
+
+      var summary = describeBackupContents(backup);
+      var when = formatDateForDisplay(backup.createdAt) || "unknown date";
+      var ok = window.confirm(
+        "Restore the backup from " + when + " (" + summary + ")?\n\n" +
+        "This REPLACES all current SAI data — master reports, report types, mappings, formulas — with the backup's contents. This cannot be undone."
+      );
+      if (!ok) return;
+
+      Object.keys(STORAGE_KEYS).forEach(function (name) {
+        localStorage.removeItem(STORAGE_KEYS[name]);
+      });
+      Object.keys(backup.data).forEach(function (key) {
+        if (key.indexOf("sai_") === 0 && typeof backup.data[key] === "string") {
+          localStorage.setItem(key, backup.data[key]);
+        }
+      });
+
+      resetFileState();
+      state.companyName = getCompanyName();
+      state.selectedMasterReport = "";
+      state.selectedReportType = "";
+      renderHomeScreen();
+      showScreen("screen-home");
+      showBackupMessage("Backup from " + when + " restored — " + summary + ".", false);
+    };
+    reader.readAsText(file);
+  }
+
+  document.getElementById("btnDownloadBackup").addEventListener("click", function () {
+    downloadBackup();
+    showBackupMessage("Backup downloaded.", false);
+  });
+  document.getElementById("btnStartOverBackup").addEventListener("click", downloadBackup);
+  document.getElementById("btnRestoreBackup").addEventListener("click", function () {
+    backupFileInput.value = "";
+    backupFileInput.click();
+  });
+  backupFileInput.addEventListener("change", function () {
+    if (backupFileInput.files && backupFileInput.files[0]) restoreFromBackupFile(backupFileInput.files[0]);
   });
 
   /* ---------------------------------------------------------------------
@@ -844,6 +1106,7 @@
   }
 
   function renderHomeScreen() {
+    document.getElementById("backupMsg").hidden = true;
     renderProgressSection();
 
     var masterReports = getMasterReports();
@@ -989,6 +1252,7 @@
     var hasFile = !!(currentWorkbook && state.fileName);
     uploadExistingWrap.hidden = !hasFile;
     uploadExistingFilename.textContent = hasFile ? state.fileName : "";
+    updateExpressOffer();
   }
 
   document.getElementById("btnUploadBack").addEventListener("click", function () {
@@ -1097,6 +1361,8 @@
   }
 
   function proceedPastUploadScreen() {
+    // Stepping through manually always abandons any half-taken express path.
+    uploadExpressPlanPending = null;
     var sheetNames = currentWorkbook ? currentWorkbook.SheetNames : [];
 
     if (sheetNames.length > 1) {
@@ -1118,6 +1384,144 @@
       goToHeaderRowStep();
     }
   }
+
+  /* --- Express run --------------------------------------------------------
+   * For month-2+ uploads: when the just-parsed file can be processed with
+   * the Report Type's remembered setup with nothing left to decide —
+   * remembered (or only) sheet, remembered header row, headers matching
+   * the saved column structure exactly (both directions, whitespace/case
+   * normalized), and saved formulas that still validate — the upload
+   * screen offers one button that applies all of it and jumps straight to
+   * Preview. Any mismatch means no offer: step-by-step is the only safe
+   * path when something changed. The add/replace decision is never
+   * skipped — when this Report Type already has rows, Express routes
+   * through the data-mode screen and completes from there
+   * (uploadExpressPlanPending).
+   * ---------------------------------------------------------------------- */
+  var uploadExpressPlanPending = null;
+
+  function getExpressRunPlan() {
+    if (!currentWorkbook || !state.selectedReportType || !state.selectedMasterReport) return null;
+    var savedStructure = getColumnStructureFor(state.selectedReportType);
+    if (!savedStructure) return null;
+
+    var sheetNames = currentWorkbook.SheetNames;
+    var sheetName;
+    if (sheetNames.length > 1) {
+      var savedSheet = getSheetPreference(state.selectedReportType);
+      if (!savedSheet || sheetNames.indexOf(savedSheet) === -1) return null;
+      sheetName = savedSheet;
+    } else {
+      sheetName = sheetNames[0];
+    }
+    var savedHeaderRow = getHeaderRowPreference(state.selectedReportType);
+    var headerRowIndex = savedHeaderRow !== null ? savedHeaderRow : 0;
+
+    var extracted;
+    try {
+      extracted = extractHeadersAndRows(currentWorkbook.Sheets[sheetName], headerRowIndex);
+    } catch (e) {
+      return null;
+    }
+
+    // Exact two-way match between the file's headers and the saved
+    // structure's original headers — any extra, missing or duplicate
+    // column disqualifies the file from the express path.
+    var byKey = {};
+    Object.keys(savedStructure).forEach(function (k) { byKey[normalizeColumnKey(k)] = savedStructure[k]; });
+    var headerKeys = extracted.headers.map(normalizeColumnKey);
+    if (Object.keys(byKey).length !== headerKeys.length) return null;
+    var seen = {};
+    for (var i = 0; i < headerKeys.length; i++) {
+      if (!Object.prototype.hasOwnProperty.call(byKey, headerKeys[i])) return null;
+      if (seen[headerKeys[i]]) return null;
+      seen[headerKeys[i]] = true;
+    }
+
+    var effectiveStructure = {};
+    var selectedColumns = [];
+    extracted.headers.forEach(function (h) {
+      var entry = byKey[normalizeColumnKey(h)];
+      effectiveStructure[h] = { include: entry.include, renameTo: entry.renameTo };
+      if (entry.include) selectedColumns.push(entry.renameTo);
+    });
+    if (!selectedColumns.length) return null;
+
+    // Saved formulas must still validate and parse against these columns,
+    // in their saved order — if anything is off, no express offer.
+    var formulas = getFormulasFor(state.selectedReportType).map(function (f) {
+      return { name: f.name, expression: f.expression };
+    });
+    var allNames = selectedColumns.concat(formulas.map(function (f) { return f.name; }));
+    var knownSoFar = selectedColumns.slice();
+    for (var k = 0; k < formulas.length; k++) {
+      var f = formulas[k];
+      if (!f.expression || !f.expression.trim()) { f.ast = null; knownSoFar.push(f.name); continue; }
+      var names = allNames.filter(function (n) { return n.toLowerCase() !== f.name.toLowerCase(); });
+      var tokens = tokenizeExpression(f.expression, names);
+      if (tokens.some(function (t) { return t.type === "unknown"; })) return null;
+      if (tokens.some(function (t) { return t.type === "column" && knownSoFar.indexOf(t.value) === -1; })) return null;
+      try { f.ast = parseExpressionTokens(tokens); } catch (e2) { return null; }
+      knownSoFar.push(f.name);
+    }
+
+    var dateHeader = getDateColumnPreference(state.selectedReportType);
+    var dateKey = "";
+    if (dateHeader) {
+      var dateEntry = byKey[normalizeColumnKey(dateHeader)];
+      if (dateEntry && dateEntry.include) dateKey = dateEntry.renameTo;
+    }
+
+    return {
+      sheetName: sheetName,
+      headerRowIndex: headerRowIndex,
+      extracted: extracted,
+      effectiveStructure: effectiveStructure,
+      selectedColumns: selectedColumns,
+      formulas: formulas,
+      dateKey: dateKey
+    };
+  }
+
+  function updateExpressOffer() {
+    var wrap = document.getElementById("expressRunWrap");
+    var plan = getExpressRunPlan();
+    wrap.hidden = !plan;
+    if (!plan) return;
+    var formulaCount = plan.formulas.length;
+    document.getElementById("expressRunText").textContent =
+      "\"" + state.fileName + "\" matches the saved setup for \"" + state.selectedReportType + "\" — " +
+      plan.selectedColumns.length + " column" + (plan.selectedColumns.length === 1 ? "" : "s") +
+      (formulaCount ? " and " + formulaCount + " formula" + (formulaCount === 1 ? "" : "s") : "") +
+      " will be applied exactly as last time.";
+  }
+
+  function runExpressPlan(plan) {
+    state.selectedSheetName = plan.sheetName;
+    state.selectedHeaderRowIndex = plan.headerRowIndex;
+    currentFileHeaders = plan.extracted.headers;
+    currentFileRows = plan.extracted.rows;
+    currentRenamedRows = buildRenamedRows(currentFileRows, plan.effectiveStructure);
+    state.selectedColumns = plan.selectedColumns;
+    state.selectedDateColumnHeader = plan.dateKey;
+
+    var existingCount = getReportTypeRowCount(state.selectedMasterReport, state.selectedReportType);
+    if (existingCount > 0) {
+      uploadExpressPlanPending = plan;
+      dataModeMessage.textContent = "\"" + state.selectedReportType + "\" currently has " + existingCount +
+        " row" + (existingCount === 1 ? "" : "s") + " from your last upload. What would you like to do with this new file?";
+      showScreen("screen-data-mode");
+    } else {
+      state.dataMode = "add";
+      mergeUploadIntoMasterAndPreview(plan.formulas);
+    }
+  }
+
+  document.getElementById("btnExpressRun").addEventListener("click", function () {
+    var plan = getExpressRunPlan();
+    if (!plan) { document.getElementById("expressRunWrap").hidden = true; return; }
+    runExpressPlan(plan);
+  });
 
   function renderSheetScreen() {
     sheetList.innerHTML = "";
@@ -1288,15 +1692,25 @@
     }
   }
 
-  document.getElementById("btnDataModeReplace").addEventListener("click", function () {
-    state.dataMode = "replace";
+  // An express run pauses here only for the add/replace decision — once
+  // made, it merges directly instead of continuing to the columns screen.
+  function afterDataModeChoice() {
+    if (uploadExpressPlanPending) {
+      var plan = uploadExpressPlanPending;
+      uploadExpressPlanPending = null;
+      mergeUploadIntoMasterAndPreview(plan.formulas);
+      return;
+    }
     renderColumnScreen();
     showScreen("screen-columns");
+  }
+  document.getElementById("btnDataModeReplace").addEventListener("click", function () {
+    state.dataMode = "replace";
+    afterDataModeChoice();
   });
   document.getElementById("btnDataModeAdd").addEventListener("click", function () {
     state.dataMode = "add";
-    renderColumnScreen();
-    showScreen("screen-columns");
+    afterDataModeChoice();
   });
   document.getElementById("btnDataModeBack").addEventListener("click", function () {
     renderHeaderRowScreen();
@@ -1477,6 +1891,7 @@
     });
 
     updateMissingColumnsSection();
+    updateDateFormatSection();
   }
 
   // Reads the effective "rename to" value for a column-selection table row,
@@ -1519,6 +1934,32 @@
       cols.push(getRenameToForRow(tr, tr.dataset.header));
     });
     return cols;
+  }
+
+  // Shown whenever a date column is marked: asks what format that column's
+  // dates are in instead of guessing silently — marketplaces differ too
+  // much for auto-detection alone. Defaults to this Report Type's saved
+  // answer so month 2+ is a zero-click confirmation, unless this file's
+  // own values PROVE a different format (see detectDateFormatForColumn),
+  // in which case the proven detection wins the default. The choice is
+  // saved on Next and drives parsing + the DD/MM/YYYY standardisation.
+  function updateDateFormatSection() {
+    var wrap = document.getElementById("dateFormatWrap");
+    var checkedRadio = columnsTableBody.querySelector(".column-date-radio:checked");
+    if (!checkedRadio) {
+      wrap.hidden = true;
+      return;
+    }
+    var header = checkedRadio.closest("tr").dataset.header;
+    var auto = detectDateFormatForColumn(currentFileRows.map(function (r) { return r[header]; }));
+    var saved = getDateFormatPreference(state.selectedReportType);
+    var selection = (saved && !(auto.proven && auto.format !== saved)) ? saved : auto.format;
+    document.getElementById("dateFormatQuestion").textContent =
+      "This file's \"" + header + "\" column — what format are the dates in?";
+    document.querySelectorAll("input[name=dateFormatChoice]").forEach(function (r) {
+      r.checked = r.value === selection;
+    });
+    wrap.hidden = false;
   }
 
   // Any column expected for this upload that the current file doesn't map
@@ -1717,6 +2158,9 @@
         e.target.classList.contains("column-rename")) {
       updateMissingColumnsSection();
     }
+    if (e.target.classList.contains("column-date-radio")) {
+      updateDateFormatSection();
+    }
   });
   columnsTableBody.addEventListener("input", function (e) {
     if (e.target.classList.contains("column-rename")) {
@@ -1725,6 +2169,7 @@
   });
   document.getElementById("btnColumnsClearDate").addEventListener("click", function () {
     columnsTableBody.querySelectorAll(".column-date-radio").forEach(function (r) { r.checked = false; });
+    updateDateFormatSection();
   });
   document.getElementById("btnColumnsMismatchUpdate").addEventListener("click", function () {
     columnsMismatchBanner.hidden = true;
@@ -1755,6 +2200,10 @@
     });
     saveColumnStructureFor(state.selectedReportType, structure);
     saveDateColumnPreferenceFor(state.selectedReportType, dateHeaderOriginal || null);
+    if (dateHeaderOriginal) {
+      var fmtRadio = document.querySelector("input[name=dateFormatChoice]:checked");
+      if (fmtRadio) saveDateFormatPreferenceFor(state.selectedReportType, fmtRadio.value);
+    }
 
     currentRenamedRows = buildRenamedRows(currentFileRows, structure);
 
@@ -2416,6 +2865,14 @@
 
     saveFormulasFor(state.selectedReportType, formulas.map(function (f) { return { name: f.name, expression: f.expression }; }));
 
+    mergeUploadIntoMasterAndPreview(formulas);
+  });
+
+  // The merge tail shared by the Formula screen's Next button and the
+  // Express Run path: computes each (already parsed) formula onto the
+  // renamed rows, snapshots pre-merge state for "Back to Formulas", merges
+  // this upload into the Master Report and lands on Preview.
+  function mergeUploadIntoMasterAndPreview(formulas) {
     currentRenamedRows.forEach(function (row) {
       formulas.forEach(function (f) {
         row[f.name] = computeExpressionValue(row, f.ast);
@@ -2443,7 +2900,7 @@
     clearSetupProgress(state.selectedMasterReport, state.selectedReportType);
 
     goToPreviewStep();
-  });
+  }
 
   /* ---------------------------------------------------------------------
    * Screen: Preview & export
@@ -2955,8 +3412,8 @@
     if (!dates.length) return "N/A";
     var min = new Date(Math.min.apply(null, dates));
     var max = new Date(Math.max.apply(null, dates));
-    var fmt = function (d) { return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }); };
-    return fmt(min) + " to " + fmt(max);
+    // Standardised DD/MM/YYYY, same as the date cells themselves.
+    return formatDateDDMMYYYY(min) + " to " + formatDateDDMMYYYY(max);
   }
 
   // Excel number-format codes behind each NUMBER_FORMAT_OPTIONS choice.
@@ -3173,6 +3630,7 @@
       cb();
     }).catch(function (err) {
       console.error("[SAI] Freeze-header export failed, downloading without freeze:", err);
+      showErrorToast("The frozen header row couldn't be applied to this export — the file was downloaded without it.");
       XLSX.writeFile(wb, safeName + ".xlsx");
       cb();
     });
