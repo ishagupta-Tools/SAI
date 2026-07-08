@@ -1497,6 +1497,17 @@
     return plainInput.value.trim() || header;
   }
 
+  // Column names that came out of real Excel files are routinely "dirty" —
+  // trailing spaces, non-breaking spaces, doubled spaces — and those
+  // variants render pixel-identically on screen. Any comparison between a
+  // blueprint column and a mapped rename has to treat "Customer State ",
+  // "Customer State" and "Customer State" as the same column, or a
+  // column that IS mapped in the table stays listed below as missing while
+  // looking exactly like the one just mapped.
+  function normalizeColumnKey(name) {
+    return String(name).replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
   // Final (renamed) names of every column currently ticked in the table —
   // read live from the DOM so checkbox/rename changes are reflected
   // immediately. These are the columns a missing-column formula may use.
@@ -1530,14 +1541,28 @@
     var masterColumns = masterData ? masterData.columns.filter(function (c) { return c !== "Report Type"; }) : [];
 
     var savedStructure = getColumnStructureFor(state.selectedReportType);
-    var expectedColumns = masterColumns.slice();
+    // Deduped on the normalized key, so a whitespace/case variant of a
+    // column that's already expected (e.g. "Customer State " from an old
+    // upload's saved structure vs the Master Report's "Customer State")
+    // never becomes a second, visually identical blueprint entry. The
+    // first-seen spelling wins — master columns are added first, so their
+    // spelling is the one shown and stamped.
+    var expectedColumns = [];
+    var expectedKeys = [];
+    function addExpectedColumn(name) {
+      var key = normalizeColumnKey(name);
+      if (expectedKeys.indexOf(key) !== -1) return;
+      expectedKeys.push(key);
+      expectedColumns.push(name);
+    }
+    masterColumns.forEach(addExpectedColumn);
     if (savedStructure) {
-      var lowerCurrentHeaders = currentFileHeaders.map(function (h) { return h.toLowerCase(); });
+      var currentHeaderKeys = currentFileHeaders.map(normalizeColumnKey);
       Object.keys(savedStructure).forEach(function (origHeader) {
         var entry = savedStructure[origHeader];
         if (!entry.include) return;
-        if (lowerCurrentHeaders.indexOf(origHeader.toLowerCase()) !== -1) return;
-        if (expectedColumns.indexOf(entry.renameTo) === -1) expectedColumns.push(entry.renameTo);
+        if (currentHeaderKeys.indexOf(normalizeColumnKey(origHeader)) !== -1) return;
+        addExpectedColumn(entry.renameTo);
       });
     }
 
@@ -1549,8 +1574,8 @@
     // Scoped to THIS Report Type only: a formula column from a DIFFERENT
     // Report Type already merged into the same Master Report still won't
     // be produced by this upload, so it correctly stays flagged as missing.
-    var formulaNames = getFormulasFor(state.selectedReportType).map(function (f) { return f.name.toLowerCase(); });
-    expectedColumns = expectedColumns.filter(function (c) { return formulaNames.indexOf(c.toLowerCase()) === -1; });
+    var formulaNames = getFormulasFor(state.selectedReportType).map(function (f) { return normalizeColumnKey(f.name); });
+    expectedColumns = expectedColumns.filter(function (c) { return formulaNames.indexOf(normalizeColumnKey(c)) === -1; });
 
     if (!expectedColumns.length) {
       wrap.hidden = true;
@@ -1567,9 +1592,9 @@
       };
     });
 
-    var covered = getIncludedRenamedColumns().map(function (c) { return c.toLowerCase(); });
+    var covered = getIncludedRenamedColumns().map(normalizeColumnKey);
 
-    var missing = expectedColumns.filter(function (c) { return covered.indexOf(c.toLowerCase()) === -1; });
+    var missing = expectedColumns.filter(function (c) { return covered.indexOf(normalizeColumnKey(c)) === -1; });
 
     wrap.hidden = missing.length === 0;
     list.innerHTML = "";
@@ -3872,8 +3897,25 @@
     renderInsightsPanel();
   }
 
+  // The dashboard analyses exactly the rows the exported report contains:
+  // rows deleted on the Preview screen (flagged __saiDeleted, never
+  // removed from the stored data) are filtered out here once, so every
+  // consumer — KPIs, auto charts, custom analysis — sees the same rows the
+  // downloaded Excel has. Restoring the rows on Preview brings them back
+  // into the analysis too.
+  function getDashboardData(masterReportName) {
+    var data = getMasterReportData(masterReportName);
+    if (!data) return null;
+    return {
+      columns: data.columns,
+      rows: data.rows.filter(function (r) { return !r.__saiDeleted; }),
+      uploadedFiles: data.uploadedFiles,
+      lastUpdated: data.lastUpdated
+    };
+  }
+
   document.getElementById("btnCustomiseAnalysis").addEventListener("click", function () {
-    var data = getMasterReportData(currentDashboardReport);
+    var data = getDashboardData(currentDashboardReport);
     if (!data) return;
     renderCustomAnalysisChecklist(data);
     document.getElementById("dashboardCustomError").hidden = true;
@@ -3883,7 +3925,7 @@
     document.getElementById("dashboardCustomPanel").hidden = true;
   });
   document.getElementById("btnCustomAnalysisApply").addEventListener("click", function () {
-    var data = getMasterReportData(currentDashboardReport);
+    var data = getDashboardData(currentDashboardReport);
     if (!data) return;
     var result = readCustomAnalysisSelections(data);
     if (!result) return;
@@ -3900,7 +3942,7 @@
   }
 
   function renderDashboardScreen() {
-    var data = getMasterReportData(currentDashboardReport);
+    var data = getDashboardData(currentDashboardReport);
     var mr = getMasterReport(currentDashboardReport);
 
     // Only shown when this Dashboard visit came from the Preview screen
