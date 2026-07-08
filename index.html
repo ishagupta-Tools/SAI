@@ -49,7 +49,10 @@
   <section class="screen" id="screen-home">
     <div class="home-wrap">
       <div class="home-header">
-        <button class="btn btn--primary btn--lg" id="btnHomeNewUpload" type="button">+ New Upload</button>
+        <div class="home-header__actions">
+          <button class="btn btn--primary btn--lg" id="btnHomeNewUpload" type="button">+ New Upload</button>
+          <button class="btn btn--lg" id="btnHomeAnalyseFile" type="button">Analyse a File</button>
+        </div>
         <div class="home-header__backup">
           <button class="btn btn--sm" id="btnDownloadBackup" type="button">Download backup</button>
           <button class="btn btn--sm" id="btnRestoreBackup" type="button">Restore from backup</button>
@@ -341,6 +344,14 @@
         </label>
       </div>
 
+      <div class="preview-scope" id="previewScopeBar" hidden>
+        <span class="preview-scope__label">Showing:</span>
+        <div class="missing-column-mode">
+          <button class="missing-column-mode__btn" id="btnPreviewScopeType" type="button"></button>
+          <button class="missing-column-mode__btn" id="btnPreviewScopeAll" type="button">All Report Types</button>
+        </div>
+      </div>
+
       <div class="preview-rowsel-bar" id="previewRowSelectionBar" hidden>
         <span id="previewRowSelectionCount"></span>
         <button class="btn btn--danger" id="btnPreviewDeleteRows" type="button">Delete selected rows</button>
@@ -367,7 +378,8 @@
         <div class="actions__group">
           <button class="btn" id="btnPreviewAddReportType" type="button">Add Another Report Type</button>
           <button class="btn" id="btnPreviewDownload" type="button">Download Excel</button>
-          <button class="btn btn--primary" id="btnPreviewDownloadAnalyse" type="button">Download &amp; Analyse &rarr;</button>
+          <button class="btn" id="btnPreviewDownload2" type="button">Download</button>
+          <button class="btn btn--primary" id="btnPreviewAnalyse" type="button">Analyse &rarr;</button>
         </div>
       </div>
     </div>
@@ -378,7 +390,8 @@
     <div class="dashboard-wrap">
       <div class="dashboard-topbar">
         <div class="actions__group">
-          <button class="btn" id="btnDashboardBackPreview" type="button" hidden>&larr; Back to Preview</button>
+          <button class="btn" id="btnDashboardBackPreview" type="button" hidden>&larr; Back to Preview &amp; Export</button>
+          <button class="btn" id="btnDashboardBackClarify" type="button" hidden>&larr; Back to File Setup</button>
           <button class="btn" id="btnDashboardBack" type="button">&larr; Back to Home</button>
         </div>
         <div class="dashboard-topbar__title">
@@ -416,6 +429,72 @@
       <div class="dashboard-insights-card" id="dashboardInsightsCard">
         <h3>Key Insights</h3>
         <ul class="dashboard-insights-list" id="dashboardInsightsList"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ANALYSE A FILE: UPLOAD -->
+  <section class="screen" id="screen-analyse-upload">
+    <div class="card">
+      <h2>Analyse a file</h2>
+      <p class="muted">Upload any data file — sales, purchases, expenses, anything. Accepted formats: CSV, XLS, XLSX.</p>
+      <label class="dropzone" id="analyseDropzone" for="analyseFileInput">
+        <span class="dropzone__icon">&#11014;</span>
+        <span class="dropzone__text">Drag &amp; drop a file here, or click to browse</span>
+        <span class="dropzone__filename" id="analyseDropzoneFilename"></span>
+      </label>
+      <input type="file" id="analyseFileInput" accept=".csv,.xlsx,.xls" hidden />
+      <p class="error" id="analyseUploadError" hidden></p>
+      <div class="actions">
+        <button class="btn" id="btnAnalyseUploadBack" type="button">Back</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ANALYSE A FILE: CLARIFY -->
+  <section class="screen" id="screen-analyse-clarify">
+    <div class="card card--wide">
+      <h2>Before analysing&hellip;</h2>
+      <p class="muted">File: <strong id="analyseClarifyFile"></strong> &mdash; SAI's best guesses are pre-filled below. Correct anything it got wrong, then hit Analyse.</p>
+
+      <div class="field" id="analyseSheetWrap" hidden>
+        <span>Which sheet holds the data?</span>
+        <select id="analyseSheetSelect"></select>
+      </div>
+
+      <label class="field">
+        <span>Which row holds the column names?</span>
+        <select id="analyseHeaderRowSelect"></select>
+      </label>
+
+      <div class="date-format-wrap">
+        <h3>What each column represents</h3>
+        <p class="muted">Metrics get totals and trends, categories get breakdowns, dates drive over-time charts.</p>
+        <div id="analyseRolesList"></div>
+      </div>
+
+      <div class="date-format-wrap" id="analyseDateWrap" hidden>
+        <h3>Date column</h3>
+        <select id="analyseDateSelect"></select>
+        <div id="analyseDateFormatChoices" hidden>
+          <p class="muted">What format are the dates in?</p>
+          <label class="date-format-option"><input type="radio" name="analyseDateFormat" value="dayfirst" /> DD/MM/YYYY &mdash; day first (common in Indian files)</label>
+          <label class="date-format-option"><input type="radio" name="analyseDateFormat" value="monthfirst" /> MM/DD/YYYY &mdash; month first</label>
+          <label class="date-format-option"><input type="radio" name="analyseDateFormat" value="excel" /> Excel date cells (detected automatically)</label>
+        </div>
+      </div>
+
+      <div class="date-format-wrap" id="analyseCompareWrap" hidden>
+        <h3>Compare metrics on one chart (optional)</h3>
+        <p class="muted">Tick 2 or more to see them together &mdash; bars for the first, lines for the rest.</p>
+        <div id="analyseCompareList" class="analyse-compare-list"></div>
+      </div>
+
+      <p class="error" id="analyseClarifyError" hidden></p>
+
+      <div class="actions actions--split">
+        <button class="btn" id="btnAnalyseClarifyBack" type="button">Back</button>
+        <button class="btn btn--primary" id="btnAnalyseGo" type="button">Analyse &rarr;</button>
       </div>
     </div>
   </section>
