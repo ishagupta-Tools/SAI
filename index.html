@@ -303,6 +303,12 @@
         </label>
       </div>
 
+      <div class="preview-rowsel-bar" id="previewRowSelectionBar" hidden>
+        <span id="previewRowSelectionCount"></span>
+        <button class="btn btn--danger" id="btnPreviewDeleteRows" type="button">Delete selected rows</button>
+        <button class="btn" id="btnPreviewClearRowSelection" type="button">Clear selection</button>
+      </div>
+
       <div class="header-row-preview-wrap">
         <table class="header-row-preview-table" id="previewTable">
           <colgroup id="previewTableColgroup"></colgroup>
@@ -313,7 +319,7 @@
         </table>
       </div>
       <p class="preview-deleted-bar" id="previewDeletedBar" hidden></p>
-      <p class="preview-reorder-hint">Drag ⠿ on column headers to reorder, drag the right edge to resize, × to delete a column from the export, pick a number format per column.</p>
+      <p class="preview-reorder-hint">Drag ⠿ on column headers to reorder, drag the right edge to resize, × to delete a column from the export, pick a number format per column. Click a row number to select the row (drag down for several), or use a row's × to delete it from the export.</p>
 
       <div class="actions actions--split">
         <div class="actions__group">
