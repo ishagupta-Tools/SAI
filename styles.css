@@ -468,22 +468,52 @@ html, body {
 .missing-columns-list { display: flex; flex-direction: column; gap: 10px; }
 .missing-column-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
 }
 .missing-column-row__name {
   min-width: 160px;
   font-size: 13px;
   font-weight: 600;
+  margin-top: 5px;
 }
-.missing-column-row input[type="text"] {
+.missing-column-editor {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.missing-column-mode {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.missing-column-mode__btn {
+  border: none;
+  background: #fff;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.missing-column-mode__btn + .missing-column-mode__btn { border-left: 1px solid var(--color-border); }
+.missing-column-mode__btn--active {
+  background: #eef2ff;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.missing-column-row input.missing-column-value {
   padding: 7px 8px;
   font-size: 13px;
   border: 1px solid var(--color-border);
   border-radius: 6px;
   background: #fff;
 }
+.missing-column-formula .formula-expr-preview { margin-top: 8px; }
 
 /* Sheet selection */
 .sheet-list {
