@@ -253,6 +253,13 @@
         <p class="hint" id="dateFormatHint">Dates will be standardised to DD/MM/YYYY in the final report, whatever format they arrive in.</p>
       </div>
 
+      <div class="date-format-wrap" id="statusColumnWrap" hidden>
+        <h3>Order status (optional)</h3>
+        <p class="muted">If this file has an order-status column, pick it and choose which statuses count towards revenue on the Analysis Dashboard. The exported report always keeps every row.</p>
+        <select id="statusColumnSelect"></select>
+        <div class="status-values-list" id="statusValuesList"></div>
+      </div>
+
       <div class="missing-columns-wrap" id="missingColumnsWrap" hidden>
         <h3>Columns not in this file</h3>
         <p class="muted" id="missingColumnsHint"></p>
