@@ -775,6 +775,39 @@ html, body {
   color: var(--color-muted);
   margin: 10px 0 0;
 }
+/* Row selection & deletion (Preview screen only — scoped under
+   #previewTable so the Header Row Selection screen's shared table classes
+   are unaffected). */
+#previewTable .preview-sno-cell {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.preview-row-delete {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  margin-left: 6px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--color-muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+#previewTable tbody tr:hover .preview-row-delete { visibility: visible; }
+.preview-row-delete:hover { color: var(--color-danger); }
+#previewTable tbody tr.preview-row--selected td { background: #dbe6ff; }
+.preview-rowsel-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: #f8f9fc;
+  font-size: 13px;
+}
 .preview-reorder-hint {
   font-size: 12px;
   color: var(--color-muted);
