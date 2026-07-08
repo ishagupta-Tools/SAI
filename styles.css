@@ -115,7 +115,47 @@ html, body {
   gap: 12px;
   margin-bottom: 36px;
 }
+.home-header__actions { display: flex; gap: 12px; }
 .home-header__backup { display: flex; gap: 10px; }
+.analyse-role-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+.analyse-role-row__name { min-width: 220px; font-size: 13px; font-weight: 600; }
+.analyse-role-select, #analyseDateSelect, #analyseSheetSelect, #analyseHeaderRowSelect {
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+}
+#analyseDateSelect { margin-bottom: 10px; }
+.analyse-compare-list { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.analyse-compare-option { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.geo-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  padding: 6px 0;
+}
+.geo-tile {
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.geo-tile__name { font-size: 12px; font-weight: 600; color: #1c2433; }
+.geo-tile__value { font-size: 14px; font-weight: 700; color: #10233f; }
+.geo-tile--more {
+  border: 1px dashed var(--color-border);
+  color: var(--color-muted);
+  font-size: 12px;
+  justify-content: center;
+  align-items: center;
+}
 .express-run {
   border: 1px solid #b7e0c8;
   background: #f0faf4;
@@ -872,6 +912,14 @@ html, body {
 #previewTable tbody tr:hover .preview-row-delete { visibility: visible; }
 .preview-row-delete:hover { color: var(--color-danger); }
 #previewTable tbody tr.preview-row--selected td { background: #dbe6ff; }
+.preview-scope {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.preview-scope__label { font-size: 13px; color: var(--color-muted); }
+
 .preview-rowsel-bar {
   display: flex;
   align-items: center;
