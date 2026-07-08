@@ -14,6 +14,8 @@
     formulas: "sai_formulas",
     dateColumnPreference: "sai_date_column_preference",
     dateFormatPreference: "sai_date_format_preference",
+    statusColumnPreference: "sai_status_column_preference",
+    statusValueMap: "sai_status_value_map",
     masterReportData: "sai_master_report_data",
     setupProgress: "sai_setup_progress",
     columnOrder: "sai_column_order",
@@ -170,6 +172,36 @@
     var all = loadJSON(STORAGE_KEYS.dateFormatPreference, {});
     all[reportType] = format;
     saveJSON(STORAGE_KEYS.dateFormatPreference, all);
+  }
+
+  // Which column holds order status (original header, like the date column
+  // preference), and how each of its values counts towards dashboard
+  // revenue: a per-Report-Type map of normalized status value →
+  // "counted" | "excluded". The map is merged (never replaced) on save, so
+  // values confirmed in earlier months survive a file that doesn't happen
+  // to contain them this month. Dashboard-only: exports keep every row.
+  // Returns undefined when this Report Type has never been configured
+  // (auto-suggest applies), null when the user explicitly chose "no
+  // status column" (no suggestion), or the saved original header.
+  function getStatusColumnPreference(reportType) {
+    var all = loadJSON(STORAGE_KEYS.statusColumnPreference, {});
+    return Object.prototype.hasOwnProperty.call(all, reportType) ? all[reportType] : undefined;
+  }
+  function saveStatusColumnPreferenceFor(reportType, originalHeaderOrNull) {
+    var all = loadJSON(STORAGE_KEYS.statusColumnPreference, {});
+    all[reportType] = originalHeaderOrNull;
+    saveJSON(STORAGE_KEYS.statusColumnPreference, all);
+  }
+  function getStatusValueMap(reportType) {
+    var all = loadJSON(STORAGE_KEYS.statusValueMap, {});
+    return all[reportType] || {};
+  }
+  function saveStatusValueMapFor(reportType, valueChoices) {
+    var all = loadJSON(STORAGE_KEYS.statusValueMap, {});
+    var existing = all[reportType] || {};
+    Object.keys(valueChoices).forEach(function (k) { existing[k] = valueChoices[k]; });
+    all[reportType] = existing;
+    saveJSON(STORAGE_KEYS.statusValueMap, all);
   }
 
   // The actual accumulated dataset for a Master Report: a union of every
@@ -1892,6 +1924,10 @@
 
     updateMissingColumnsSection();
     updateDateFormatSection();
+    // A fresh render must not inherit the previous file's in-session
+    // status pick, so clear the select before recomputing it.
+    statusColumnSelect.value = "";
+    updateStatusSection();
   }
 
   // Reads the effective "rename to" value for a column-selection table row,
@@ -1961,6 +1997,130 @@
     });
     wrap.hidden = false;
   }
+
+  /* --- Order status section (columns screen) -----------------------------
+   * Optional, per Report Type: pick which column holds order status, then
+   * decide per DISTINCT VALUE actually present in this file whether rows
+   * with that status count towards dashboard revenue or are excluded
+   * (fully cancelled/returned orders). Values are listed with row counts;
+   * defaults come from the saved map first, else from keywords
+   * (cancel/return/rto/refund/reject → excluded). Only affects the
+   * Analysis Dashboard — exports keep every row.
+   * ---------------------------------------------------------------------- */
+  var STATUS_EXCLUDE_RE = /cancel|return|rto|refund|reject/;
+  var statusColumnSelect = document.getElementById("statusColumnSelect");
+
+  function defaultStatusChoice(normalizedValue, savedMap) {
+    if (Object.prototype.hasOwnProperty.call(savedMap, normalizedValue)) return savedMap[normalizedValue];
+    return STATUS_EXCLUDE_RE.test(normalizedValue) ? "excluded" : "counted";
+  }
+
+  function renderStatusValuesList() {
+    var list = document.getElementById("statusValuesList");
+    var header = statusColumnSelect.value;
+
+    // Choices already toggled in this session survive a rebuild.
+    var previous = {};
+    list.querySelectorAll(".status-value-row").forEach(function (r) {
+      previous[r.dataset.value] = r.dataset.choice;
+    });
+    list.innerHTML = "";
+    if (!header) return;
+
+    var savedMap = getStatusValueMap(state.selectedReportType);
+    var buckets = {};
+    var order = [];
+    currentFileRows.forEach(function (row) {
+      var v = row[header];
+      if (v === undefined || v === null || String(v).trim() === "") return;
+      var key = normalizeColumnKey(String(v));
+      if (!buckets[key]) { buckets[key] = { label: String(v).trim(), count: 0 }; order.push(key); }
+      buckets[key].count++;
+    });
+
+    order.forEach(function (key) {
+      var row = document.createElement("div");
+      row.className = "status-value-row";
+      row.dataset.value = key;
+
+      var label = document.createElement("span");
+      label.className = "status-value-row__label";
+      label.textContent = buckets[key].label + " ";
+      var count = document.createElement("span");
+      count.className = "status-value-row__count";
+      count.textContent = "(" + buckets[key].count + " row" + (buckets[key].count === 1 ? "" : "s") + ")";
+      label.appendChild(count);
+      row.appendChild(label);
+
+      var modeBar = document.createElement("div");
+      modeBar.className = "missing-column-mode";
+      var countedBtn = document.createElement("button");
+      countedBtn.type = "button";
+      countedBtn.className = "missing-column-mode__btn";
+      countedBtn.textContent = "Counted";
+      modeBar.appendChild(countedBtn);
+      var excludedBtn = document.createElement("button");
+      excludedBtn.type = "button";
+      excludedBtn.className = "missing-column-mode__btn";
+      excludedBtn.textContent = "Excluded";
+      modeBar.appendChild(excludedBtn);
+      row.appendChild(modeBar);
+
+      function applyChoice(choice) {
+        row.dataset.choice = choice;
+        countedBtn.classList.toggle("missing-column-mode__btn--active", choice === "counted");
+        excludedBtn.classList.toggle("missing-column-mode__btn--active", choice === "excluded");
+      }
+      countedBtn.addEventListener("click", function () { applyChoice("counted"); });
+      excludedBtn.addEventListener("click", function () { applyChoice("excluded"); });
+      applyChoice(previous[key] || defaultStatusChoice(key, savedMap));
+
+      list.appendChild(row);
+    });
+  }
+
+  function updateStatusSection() {
+    var wrap = document.getElementById("statusColumnWrap");
+    wrap.hidden = false;
+
+    var includedHeaders = [];
+    columnsTableBody.querySelectorAll("tr").forEach(function (tr) {
+      if (tr.querySelector(".column-include").checked) includedHeaders.push(tr.dataset.header);
+    });
+
+    var current = statusColumnSelect.value;
+    statusColumnSelect.innerHTML = "";
+    var noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = "(no status column)";
+    statusColumnSelect.appendChild(noneOpt);
+    includedHeaders.forEach(function (h) {
+      var opt = document.createElement("option");
+      opt.value = h;
+      opt.textContent = h;
+      statusColumnSelect.appendChild(opt);
+    });
+
+    // Keep the user's in-session pick if still valid; otherwise the saved
+    // preference for this Report Type; otherwise suggest by column name.
+    var selection = "";
+    if (current && includedHeaders.indexOf(current) !== -1) selection = current;
+    else {
+      var saved = getStatusColumnPreference(state.selectedReportType);
+      var savedMatch = saved ? includedHeaders.find(function (h) { return normalizeColumnKey(h) === normalizeColumnKey(saved); }) : null;
+      if (savedMatch) selection = savedMatch;
+      else if (saved === undefined) {
+        // Never configured for this Report Type → suggest by column name.
+        // An explicit "(no status column)" answer (saved === null) sticks.
+        var suggested = findColumnByKeywords(includedHeaders, ["order status", "status", "order state"]);
+        if (suggested) selection = suggested;
+      }
+    }
+    statusColumnSelect.value = selection;
+    renderStatusValuesList();
+  }
+
+  statusColumnSelect.addEventListener("change", renderStatusValuesList);
 
   // Any column expected for this upload that the current file doesn't map
   // onto (because it has no matching/included header) is offered here so
@@ -2158,6 +2318,9 @@
         e.target.classList.contains("column-rename")) {
       updateMissingColumnsSection();
     }
+    if (e.target.classList.contains("column-include")) {
+      updateStatusSection();
+    }
     if (e.target.classList.contains("column-date-radio")) {
       updateDateFormatSection();
     }
@@ -2203,6 +2366,15 @@
     if (dateHeaderOriginal) {
       var fmtRadio = document.querySelector("input[name=dateFormatChoice]:checked");
       if (fmtRadio) saveDateFormatPreferenceFor(state.selectedReportType, fmtRadio.value);
+    }
+
+    saveStatusColumnPreferenceFor(state.selectedReportType, statusColumnSelect.value || null);
+    if (statusColumnSelect.value) {
+      var statusChoices = {};
+      document.querySelectorAll("#statusValuesList .status-value-row").forEach(function (r) {
+        statusChoices[r.dataset.value] = r.dataset.choice;
+      });
+      saveStatusValueMapFor(state.selectedReportType, statusChoices);
     }
 
     currentRenamedRows = buildRenamedRows(currentFileRows, structure);
@@ -3931,9 +4103,12 @@
     return total ? (positive / total) * 100 : null;
   }
 
-  function computeROAS(rows, spendColumn, revenueColumn) {
-    var spend = sumColumn(rows, spendColumn);
-    var revenue = sumColumn(rows, revenueColumn);
+  // Spend is real regardless of an order's outcome, so it sums over ALL
+  // rows; the revenue side only counts rows retained after the order
+  // status exclusions.
+  function computeROAS(allRows, countedRows, spendColumn, revenueColumn) {
+    var spend = sumColumn(allRows, spendColumn);
+    var revenue = sumColumn(countedRows, revenueColumn);
     if (!spend) return null;
     return revenue / spend;
   }
@@ -4108,6 +4283,38 @@
     });
   }
 
+  // Resolves each row's Report Type to its configured status column
+  // (original header → this Report Type's saved structure → renamed key)
+  // and value map, returning a predicate for "this row's status is mapped
+  // to Excluded". Report Types with no status column configured — and rows
+  // with blank/unmapped status values — always count. Applied at
+  // dashboard-render time so re-confirming the mapping on a later upload
+  // retroactively fixes already-merged rows too.
+  function buildStatusExclusionChecker(data) {
+    var byType = {};
+    data.rows.forEach(function (r) {
+      var t = r["Report Type"];
+      if (t === undefined || Object.prototype.hasOwnProperty.call(byType, t)) return;
+      byType[t] = null;
+      var orig = getStatusColumnPreference(t);
+      if (!orig) return;
+      var entry = findSavedStructureEntry(getColumnStructureFor(t), orig);
+      var key = entry && entry.include ? entry.renameTo : orig;
+      byType[t] = { key: key, map: getStatusValueMap(t) };
+    });
+    return function (row) {
+      var conf = byType[row["Report Type"]];
+      if (!conf) return false;
+      var v = row[conf.key];
+      if (v === undefined || v === null || String(v).trim() === "") return false;
+      // defaultStatusChoice = the user's saved answer for this value, or
+      // the same keyword suggestion the columns screen would preselect —
+      // so a value that arrived via Express Run (never shown in the UI)
+      // behaves exactly as its on-screen default would have.
+      return defaultStatusChoice(normalizeColumnKey(String(v)), conf.map) === "excluded";
+    };
+  }
+
   /* ---- Layer 1: Auto Analysis ---- */
   function renderAutoAnalysis(data, mr) {
     var kpiRow = document.getElementById("dashboardKpiRow");
@@ -4119,22 +4326,39 @@
     var rows = data.rows;
     var info = classifyMasterReportColumns(data);
 
+    // Revenue-style numbers only count rows whose order status isn't
+    // mapped to Excluded (fully cancelled/returned orders). Row counts and
+    // the return rate still describe ALL rows — they're operational
+    // metrics, not retained money.
+    var isStatusExcluded = buildStatusExclusionChecker(data);
+    var countedRows = rows.filter(function (r) { return !isStatusExcluded(r); });
+    var excludedCount = rows.length - countedRows.length;
+    var retainedSuffix = excludedCount ? " (retained)" : "";
+
     createStatTile(kpiRow, "Total Rows", rows.length.toLocaleString("en-IN"));
     createStatTile(kpiRow, "Report Types Merged", String(mr ? mr.reportTypesUsed.length : 0));
     createStatTile(kpiRow, "Date Range Covered", computePeriodCoveredText(rows));
 
     if (info.primaryNumericColumn) {
       var col = info.primaryNumericColumn;
-      var total = sumColumn(rows, col);
-      var avg = averageColumn(rows, col);
-      createStatTile(kpiRow, "Total " + niceMetricLabel(col), formatMetricValue(total, col));
-      createStatTile(kpiRow, "Average " + niceMetricLabel(col), formatMetricValue(avg, col));
-      dashboardAutoInsights.push("Total " + niceMetricLabel(col).toLowerCase() + " across all rows is " + formatMetricValue(total, col) + ".");
+      var total = sumColumn(countedRows, col);
+      var avg = averageColumn(countedRows, col);
+      createStatTile(kpiRow, "Total " + niceMetricLabel(col) + retainedSuffix, formatMetricValue(total, col));
+      createStatTile(kpiRow, "Average " + niceMetricLabel(col) + retainedSuffix, formatMetricValue(avg, col));
+      if (excludedCount) {
+        var excludedSum = sumColumn(rows.filter(isStatusExcluded), col);
+        createStatTile(kpiRow, "Excluded (Cancelled/Returned)",
+          formatMetricValue(excludedSum, col) + " · " + excludedCount + " row" + (excludedCount === 1 ? "" : "s"));
+        dashboardAutoInsights.push("Total " + niceMetricLabel(col).toLowerCase() + " retained is " + formatMetricValue(total, col) +
+          " — " + formatMetricValue(excludedSum, col) + " from " + excludedCount + " cancelled/returned row" + (excludedCount === 1 ? "" : "s") + " excluded.");
+      } else {
+        dashboardAutoInsights.push("Total " + niceMetricLabel(col).toLowerCase() + " across all rows is " + formatMetricValue(total, col) + ".");
+      }
     }
 
     var hasDates = rows.some(function (r) { return !!r.__saiDate; });
     if (hasDates) {
-      var weeks = groupBySaiDateWeek(rows, info.primaryNumericColumn);
+      var weeks = groupBySaiDateWeek(countedRows, info.primaryNumericColumn);
       if (weeks.length) {
         var labels = weeks.map(function (w) { return weekLabel(w.date); });
         var values = weeks.map(function (w) { return info.primaryNumericColumn ? w.sum : w.count; });
@@ -4150,7 +4374,7 @@
     }
 
     if (info.platformColumn) {
-      var breakdown = foldIntoOther(groupByColumnValue(rows, info.platformColumn, info.primaryNumericColumn), 8);
+      var breakdown = foldIntoOther(groupByColumnValue(countedRows, info.platformColumn, info.primaryNumericColumn), 8);
       if (breakdown.length) {
         var bLabels = breakdown.map(function (b) { return b.label; });
         var bValues = breakdown.map(function (b) { return info.primaryNumericColumn ? b.sum : b.count; });
@@ -4205,7 +4429,7 @@
     }
 
     if (info.adSpendColumn && info.revenueColumn) {
-      var roas = computeROAS(rows, info.adSpendColumn, info.revenueColumn);
+      var roas = computeROAS(rows, countedRows, info.adSpendColumn, info.revenueColumn);
       if (roas !== null) {
         createStatTile(kpiRow, "ROAS", roas.toFixed(2) + "x");
         dashboardAutoInsights.push("Every ₹1 spent on ads returned ₹" + roas.toFixed(2) + " in revenue.");
