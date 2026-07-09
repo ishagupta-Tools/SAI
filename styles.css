@@ -919,6 +919,23 @@ html, body {
   margin-bottom: 10px;
 }
 .preview-scope__label { font-size: 13px; color: var(--color-muted); }
+.chip--stale { background: #fdf1dc; color: #8a5a00; }
+.stale-notice {
+  border: 1px solid #f0dcb4;
+  background: #fdf6e7;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #6b4c00;
+}
+.stale-notice__line { padding: 2px 0; }
+.home-blueprint-marker {
+  margin: 0;
+  font-size: 13px;
+  color: #067647;
+  font-weight: 600;
+}
 
 .preview-rowsel-bar {
   display: flex;
