@@ -675,9 +675,9 @@
    *     screen on first-run setup, or whichever screen "Edit company" (in
    *     the topbar, visible on every screen) was clicked from.
    *   - dashboardEntryScreen: whether the Dashboard was opened from the
-   *     Preview screen (via Download & Analyse) or straight from a Home
-   *     card's "Analyse" button — btnDashboardBackPreview only makes sense
-   *     (and is only shown) in the former case.
+   *     Preview screen (via Analyse) or from the Analyse-a-File clarify
+   *     screen — the matching "back" button (btnDashboardBackPreview /
+   *     btnDashboardBackClarify) is only shown for its own entry point.
    * Both are set right before the showScreen() call that navigates TO the
    * screen in question, at every place that does so.
    * ------------------------------------------------------------------- */
@@ -1293,18 +1293,6 @@
         showScreen("screen-master-report");
       });
       card.appendChild(addBtn);
-
-      if (rowCount > 0) {
-        var analyseBtn = document.createElement("button");
-        analyseBtn.type = "button";
-        analyseBtn.className = "btn";
-        analyseBtn.textContent = "Analyse";
-        analyseBtn.addEventListener("click", function () {
-          dashboardEntryScreen = "screen-home";
-          openDashboardFor(mr.name);
-        });
-        card.appendChild(analyseBtn);
-      }
 
       list.appendChild(card);
     });
@@ -3965,10 +3953,9 @@
     });
   }
   document.getElementById("btnPreviewDownload").addEventListener("click", downloadExportAndGoHome);
-  document.getElementById("btnPreviewDownload2").addEventListener("click", downloadExportAndGoHome);
 
   // "Analyse" opens the unified Analyse tool on this master's merged data
-  // (no download of its own — the Download buttons handle that).
+  // (no download of its own — Download Excel handles that).
   document.getElementById("btnPreviewAnalyse").addEventListener("click", function () {
     dashboardEntryScreen = "screen-preview";
     openDashboardFor(state.selectedMasterReport);
@@ -4258,7 +4245,7 @@
     analyseCompareMetrics = compared.length >= 2 ? compared : null;
 
     // Each analysis session starts with a clean Custom Analysis slate.
-    saveDashboardCustomFor(ANALYSE_SESSION_KEY, { columns: [], explanations: {} });
+    saveDashboardCustomFor(ANALYSE_SESSION_KEY, { columns: [], explanations: {}, charts: [] });
 
     dashboardEntryScreen = "screen-analyse-clarify";
     currentDashboardReport = ANALYSE_SESSION_KEY;
@@ -5264,6 +5251,241 @@
     return { columns: selectedColumns, explanations: explanations };
   }
 
+  /* --- Custom chart builder ---------------------------------------------
+   * "Or build a chart yourself" inside + Customise Your Analysis: the user
+   * picks a chart type (Pie / Line / Bar / Bar + Line) and the columns to
+   * chart, with a live preview that re-renders on every change BEFORE the
+   * chart is added to the dashboard. Saved specs live in the same
+   * sai_dashboard_custom entry as the checklist picks (charts: []), so
+   * they persist per Master Report exactly like the auto charts — and the
+   * Analyse-a-File session clears them on entry like everything else.
+   * --------------------------------------------------------------------- */
+  var CUSTOM_COUNT_KEY = "__count"; // the "Row count" option in the value selects
+  var customChartType = "bar";
+
+  function customChartValueLabel(column) {
+    return column === CUSTOM_COUNT_KEY ? "Rows" : column;
+  }
+
+  // Stored rows keep dates standardised to DD/MM/YYYY (the columns screen's
+  // date-format work), so slash/dash dates parse day-first here — plain
+  // new Date() would read "07/06/2026" month-first. Anything else
+  // date-shaped still goes through new Date().
+  function customChartParseDate(v) {
+    if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+    if (typeof v !== "string" || !dashLooksLikeDateString(v)) return null;
+    var m = v.trim().match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if (m) {
+      var day = +m[1], month = +m[2];
+      if (month > 12 && day <= 12) { month = +m[1]; day = +m[2]; }
+      if (month > 12) return null;
+      var year = +m[3] < 100 ? 2000 + +m[3] : +m[3];
+      var d = new Date(year, month - 1, day);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    var parsed = new Date(v.trim());
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  // Buckets rows along the X pick and aggregates every Y pick per bucket:
+  // sum for a numeric column, row count for the Row count option. An X
+  // whose values mostly parse as dates buckets by week in date order;
+  // anything else groups by value, biggest first, folded into "Other"
+  // beyond the palette's 8 slots (same rule as foldIntoOther). Pie always
+  // groups by value — weekly pie slices help nobody.
+  function buildCustomChartData(rows, spec) {
+    var yCols = spec.type === "combo" ? [spec.y, spec.y2] : [spec.y];
+    function newSums() { return yCols.map(function () { return 0; }); }
+    function accumulate(sums, r) {
+      yCols.forEach(function (yc, i) {
+        if (yc === CUSTOM_COUNT_KEY) { sums[i]++; return; }
+        var n = dashToNumber(r[yc]);
+        if (n !== null) sums[i] += n;
+      });
+    }
+
+    if (spec.type !== "pie") {
+      var dateBuckets = {}, xSeen = 0, dateHits = 0;
+      rows.forEach(function (r) {
+        var v = r[spec.x];
+        if (dashIsBlank(v)) return;
+        xSeen++;
+        var d = customChartParseDate(v);
+        if (!d) return;
+        dateHits++;
+        var monday = mondayOf(d);
+        var key = monday.getTime();
+        if (!dateBuckets[key]) dateBuckets[key] = { date: monday, sums: newSums() };
+        accumulate(dateBuckets[key].sums, r);
+      });
+      if (xSeen && dateHits / xSeen >= 0.6) {
+        var weeks = Object.keys(dateBuckets).map(function (k) { return dateBuckets[k]; })
+          .sort(function (a, b) { return a.date - b.date; });
+        return {
+          labels: weeks.map(function (w) { return weekLabel(w.date); }),
+          series: yCols.map(function (_, i) { return weeks.map(function (w) { return w.sums[i]; }); })
+        };
+      }
+    }
+
+    var buckets = {};
+    rows.forEach(function (r) {
+      var raw = r[spec.x];
+      if (dashIsBlank(raw)) return;
+      var label = String(raw).trim();
+      var key = label.toLowerCase();
+      if (!buckets[key]) buckets[key] = { label: label, sums: newSums() };
+      accumulate(buckets[key].sums, r);
+    });
+    var list = Object.keys(buckets).map(function (k) { return buckets[k]; })
+      .sort(function (a, b) { return b.sums[0] - a.sums[0]; });
+    if (list.length > 8) {
+      var head = list.slice(0, 7), tail = list.slice(7);
+      head.push({
+        label: "Other",
+        sums: yCols.map(function (_, i) { return tail.reduce(function (s, b) { return s + b.sums[i]; }, 0); })
+      });
+      list = head;
+    }
+    return {
+      labels: list.map(function (b) { return b.label; }),
+      series: yCols.map(function (_, i) { return list.map(function (b) { return b.sums[i]; }); })
+    };
+  }
+
+  function renderCustomChartBySpec(canvas, chartData, spec) {
+    var yLab = customChartValueLabel(spec.y);
+    if (spec.type === "pie") {
+      renderDoughnutChart(canvas, chartData.labels, chartData.series[0]);
+    } else if (spec.type === "line") {
+      renderLineChart(canvas, chartData.labels, chartData.series[0], { xLabel: spec.x, yLabel: yLab });
+    } else if (spec.type === "bar") {
+      renderBarChart(canvas, chartData.labels, chartData.series[0], { xLabel: spec.x, yLabel: yLab });
+    } else {
+      renderComboChart(canvas, chartData.labels, [
+        { label: yLab, values: chartData.series[0] },
+        { label: customChartValueLabel(spec.y2), values: chartData.series[1] }
+      ], { xLabel: spec.x, yLabel: yLab, y2Label: customChartValueLabel(spec.y2) });
+    }
+  }
+
+  function customChartTitle(spec) {
+    var yLab = customChartValueLabel(spec.y);
+    if (spec.type === "pie") return "Share of " + yLab + " by " + spec.x;
+    if (spec.type === "line") return yLab + " over " + spec.x;
+    if (spec.type === "combo") return yLab + " & " + customChartValueLabel(spec.y2) + " by " + spec.x;
+    return yLab + " by " + spec.x;
+  }
+
+  function customChartInsight(chartData, spec) {
+    var values = chartData.series[0];
+    var maxIdx = 0;
+    values.forEach(function (v, i) { if (v > values[maxIdx]) maxIdx = i; });
+    var yLab = customChartValueLabel(spec.y);
+    if (spec.type === "pie") {
+      var total = values.reduce(function (s, v) { return s + v; }, 0);
+      var pct = total ? Math.round((values[maxIdx] / total) * 100) : 0;
+      return chartData.labels[maxIdx] + " accounts for " + pct + "% of " + yLab + ".";
+    }
+    return chartData.labels[maxIdx] + " has the highest " + yLab + " (" + formatIndianCompact(values[maxIdx]) + ").";
+  }
+
+  function readCustomChartSpec() {
+    return {
+      type: customChartType,
+      x: document.getElementById("customChartX").value,
+      y: document.getElementById("customChartY").value,
+      y2: document.getElementById("customChartY2").value
+    };
+  }
+
+  function fillCustomChartSelect(select, options, chosen) {
+    select.innerHTML = "";
+    options.forEach(function (opt) {
+      var o = document.createElement("option");
+      o.value = opt.value;
+      o.textContent = opt.label;
+      select.appendChild(o);
+    });
+    if (chosen && options.some(function (o) { return o.value === chosen; })) select.value = chosen;
+  }
+
+  function updateCustomChartTypeControls() {
+    var typeButtons = { pie: "btnChartTypePie", line: "btnChartTypeLine", bar: "btnChartTypeBar", combo: "btnChartTypeCombo" };
+    Object.keys(typeButtons).forEach(function (t) {
+      document.getElementById(typeButtons[t]).classList.toggle("missing-column-mode__btn--active", customChartType === t);
+    });
+    document.getElementById("customChartXLabel").textContent = customChartType === "pie" ? "Slice by" : "X axis";
+    document.getElementById("customChartYLabel").textContent =
+      customChartType === "pie" ? "Slice size" : (customChartType === "combo" ? "Y axis (bars)" : "Y axis");
+    document.getElementById("customChartY2Wrap").hidden = customChartType !== "combo";
+  }
+
+  function populateCustomChartBuilder(data) {
+    var info = classifyMasterReportColumns(data);
+    var xOptions = data.columns.map(function (c) { return { value: c, label: c }; });
+    var valueOptions = [{ value: CUSTOM_COUNT_KEY, label: "Row count" }].concat(
+      info.numericColumns.map(function (c) { return { value: c, label: c + " (sum)" }; })
+    );
+    var defaultX = info.platformColumn || data.columns.filter(function (c) {
+      return info.classifications[c].type === "categorical";
+    })[0] || data.columns[0];
+
+    fillCustomChartSelect(document.getElementById("customChartX"), xOptions, defaultX);
+    fillCustomChartSelect(document.getElementById("customChartY"), valueOptions, info.primaryNumericColumn || CUSTOM_COUNT_KEY);
+    fillCustomChartSelect(document.getElementById("customChartY2"), valueOptions, CUSTOM_COUNT_KEY);
+    updateCustomChartTypeControls();
+    renderCustomChartPreview();
+  }
+
+  function renderCustomChartPreview() {
+    var wrap = document.getElementById("customChartPreviewWrap");
+    var msg = document.getElementById("customChartPreviewMsg");
+    wrap.innerHTML = ""; // dropping the old canvas drops its Chart instance with it
+    var data = getScopedDashboardData();
+    var spec = readCustomChartSpec();
+    var chartData = data && data.rows.length ? buildCustomChartData(data.rows, spec) : { labels: [], series: [] };
+    if (!chartData.labels.length) {
+      msg.textContent = "Nothing to preview for these picks — try a different column.";
+      msg.hidden = false;
+      return;
+    }
+    msg.hidden = true;
+    var canvas = document.createElement("canvas");
+    wrap.appendChild(canvas);
+    renderCustomChartBySpec(canvas, chartData, spec);
+  }
+
+  [["btnChartTypePie", "pie"], ["btnChartTypeLine", "line"], ["btnChartTypeBar", "bar"], ["btnChartTypeCombo", "combo"]].forEach(function (pair) {
+    document.getElementById(pair[0]).addEventListener("click", function () {
+      customChartType = pair[1];
+      updateCustomChartTypeControls();
+      renderCustomChartPreview();
+    });
+  });
+  ["customChartX", "customChartY", "customChartY2"].forEach(function (id) {
+    document.getElementById(id).addEventListener("change", renderCustomChartPreview);
+  });
+
+  document.getElementById("btnCustomChartAdd").addEventListener("click", function () {
+    var data = getScopedDashboardData();
+    if (!data || !data.rows.length) return;
+    var spec = readCustomChartSpec();
+    var errorEl = document.getElementById("customChartError");
+    var chartData = buildCustomChartData(data.rows, spec);
+    if (!chartData.labels.length) {
+      errorEl.textContent = "This chart has no data to show — pick different columns.";
+      errorEl.hidden = false;
+      return;
+    }
+    errorEl.hidden = true;
+    var custom = getDashboardCustomFor(currentDashboardReport);
+    custom.charts = (custom.charts || []).concat([spec]);
+    saveDashboardCustomFor(currentDashboardReport, custom);
+    document.getElementById("dashboardCustomPanel").hidden = true;
+    refreshCustomSection(data);
+  });
+
   function renderCustomCharts(data) {
     var grid = document.getElementById("dashboardCustomChartsGrid");
     var emptyState = document.getElementById("dashboardCustomEmptyState");
@@ -5271,10 +5493,11 @@
     dashboardCustomInsights = [];
 
     var custom = getDashboardCustomFor(currentDashboardReport);
+    var customCharts = custom.charts || [];
     var info = classifyMasterReportColumns(data);
     var rows = data.rows;
 
-    emptyState.hidden = custom.columns.length > 0;
+    emptyState.hidden = custom.columns.length > 0 || customCharts.length > 0;
 
     custom.columns.forEach(function (column) {
       if (data.columns.indexOf(column) === -1) return; // no longer part of this report's schema
@@ -5325,6 +5548,26 @@
         catCard.insightEl.textContent = catInsight;
         dashboardCustomInsights.push(catInsight);
       }
+    });
+
+    // User-built charts (chart type + axes picked in the builder) render
+    // after the auto column charts, removable like them.
+    customCharts.forEach(function (spec, chartIdx) {
+      var needed = [spec.x, spec.y].concat(spec.type === "combo" ? [spec.y2] : []);
+      var missing = needed.some(function (c) { return c !== CUSTOM_COUNT_KEY && data.columns.indexOf(c) === -1; });
+      if (missing) return; // no longer part of this report's schema
+      var chartData = buildCustomChartData(rows, spec);
+      if (!chartData.labels.length) return;
+      var card = createChartCard(grid, customChartTitle(spec), true, function () {
+        var updated = getDashboardCustomFor(currentDashboardReport);
+        updated.charts = (updated.charts || []).filter(function (_, i) { return i !== chartIdx; });
+        saveDashboardCustomFor(currentDashboardReport, updated);
+        refreshCustomSection(data);
+      });
+      renderCustomChartBySpec(card.canvas, chartData, spec);
+      var insight = customChartInsight(chartData, spec);
+      card.insightEl.textContent = insight;
+      dashboardCustomInsights.push(insight);
     });
   }
 
@@ -5384,7 +5627,11 @@
     if (!data) return;
     renderCustomAnalysisChecklist(data);
     document.getElementById("dashboardCustomError").hidden = true;
+    document.getElementById("customChartError").hidden = true;
+    // Unhide first: the live preview needs the panel laid out so the
+    // chart canvas has a real size to render into.
     document.getElementById("dashboardCustomPanel").hidden = false;
+    populateCustomChartBuilder(data);
   });
   document.getElementById("btnCustomAnalysisCancel").addEventListener("click", function () {
     document.getElementById("dashboardCustomPanel").hidden = true;
