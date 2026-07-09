@@ -381,7 +381,6 @@
         <div class="actions__group">
           <button class="btn" id="btnPreviewAddReportType" type="button">Add Another Report Type</button>
           <button class="btn" id="btnPreviewDownload" type="button">Download Excel</button>
-          <button class="btn" id="btnPreviewDownload2" type="button">Download</button>
           <button class="btn btn--primary" id="btnPreviewAnalyse" type="button">Analyse &rarr;</button>
         </div>
       </div>
@@ -430,6 +429,42 @@
           <div class="actions">
             <button class="btn" id="btnCustomAnalysisCancel" type="button">Cancel</button>
             <button class="btn btn--primary" id="btnCustomAnalysisApply" type="button">Add to Dashboard</button>
+          </div>
+
+          <div class="custom-chart-builder">
+            <h4 class="custom-chart-builder__title">Or build a chart yourself</h4>
+            <div class="custom-chart-builder__body">
+              <div class="custom-chart-builder__controls">
+                <div class="field">
+                  <span>Chart type</span>
+                  <div class="missing-column-mode">
+                    <button class="missing-column-mode__btn" id="btnChartTypePie" type="button">Pie</button>
+                    <button class="missing-column-mode__btn" id="btnChartTypeLine" type="button">Line</button>
+                    <button class="missing-column-mode__btn" id="btnChartTypeBar" type="button">Bar</button>
+                    <button class="missing-column-mode__btn" id="btnChartTypeCombo" type="button">Bar + Line</button>
+                  </div>
+                </div>
+                <label class="field" id="customChartXWrap">
+                  <span id="customChartXLabel">X axis</span>
+                  <select id="customChartX" class="custom-chart-select"></select>
+                </label>
+                <label class="field" id="customChartYWrap">
+                  <span id="customChartYLabel">Y axis</span>
+                  <select id="customChartY" class="custom-chart-select"></select>
+                </label>
+                <label class="field" id="customChartY2Wrap" hidden>
+                  <span>Line value (second Y)</span>
+                  <select id="customChartY2" class="custom-chart-select"></select>
+                </label>
+                <p class="error" id="customChartError" hidden></p>
+                <button class="btn btn--primary" id="btnCustomChartAdd" type="button">Add Chart to Dashboard</button>
+              </div>
+              <div class="custom-chart-builder__preview">
+                <span class="custom-chart-builder__preview-label">Live preview</span>
+                <div class="custom-chart-builder__preview-box" id="customChartPreviewWrap"></div>
+                <p class="muted custom-chart-builder__preview-msg" id="customChartPreviewMsg" hidden></p>
+              </div>
+            </div>
           </div>
         </div>
 
