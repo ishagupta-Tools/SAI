@@ -918,6 +918,7 @@ html, body {
   gap: 10px;
   margin-bottom: 10px;
 }
+.preview-scope[hidden] { display: none; }
 .preview-scope__label { font-size: 13px; color: var(--color-muted); }
 .chip--stale { background: #fdf1dc; color: #8a5a00; }
 .stale-notice {
@@ -948,6 +949,7 @@ html, body {
   background: #f8f9fc;
   font-size: 13px;
 }
+.preview-rowsel-bar[hidden] { display: none; }
 .preview-reorder-hint {
   font-size: 12px;
   color: var(--color-muted);
@@ -1126,6 +1128,39 @@ html, body {
   padding: 12px 14px;
   background: #fafbfd;
 }
+.custom-chart-builder {
+  border-top: 1px solid var(--color-border);
+  margin-top: 20px;
+  padding-top: 16px;
+}
+.custom-chart-builder__title { margin: 0 0 12px; font-size: 15px; }
+.custom-chart-builder__body { display: flex; gap: 24px; flex-wrap: wrap; }
+.custom-chart-builder__controls { flex: 0 0 280px; }
+.custom-chart-builder__controls .field { margin-bottom: 14px; }
+.custom-chart-select {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+}
+.custom-chart-builder__preview { flex: 1; min-width: 300px; }
+.custom-chart-builder__preview-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.custom-chart-builder__preview-box {
+  position: relative;
+  height: 260px;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+.custom-chart-builder__preview-msg { font-size: 13px; margin-top: 8px; }
 .column-check-item label {
   display: flex;
   align-items: center;
