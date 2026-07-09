@@ -35,6 +35,36 @@
     localStorage.setItem(key, JSON.stringify(value));
   }
 
+  /* --- Session activity ----------------------------------------------------
+   * A Report Type is "active" only if the user has actually worked with it
+   * during this browser visit — started an upload for it or merged its
+   * data. Lives in sessionStorage: survives an accidental F5 mid-task,
+   * resets when the tab closes, exactly matching "each visit is a fresh
+   * standalone task". Merely LOOKING at the All Report Types view never
+   * marks anything active. Preview & Export and the Analyse dashboard both
+   * default to showing active types only.
+   * ------------------------------------------------------------------------ */
+  var SESSION_ACTIVE_KEY = "sai_session_active_types";
+
+  function getSessionActiveTypes() {
+    try {
+      return JSON.parse(sessionStorage.getItem(SESSION_ACTIVE_KEY)) || [];
+    } catch (e) {
+      return [];
+    }
+  }
+  function markReportTypeActive(name) {
+    if (!name) return;
+    var list = getSessionActiveTypes();
+    if (list.indexOf(name) !== -1) return;
+    list.push(name);
+    try { sessionStorage.setItem(SESSION_ACTIVE_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function isReportTypeActive(name) {
+    var lower = String(name).toLowerCase();
+    return getSessionActiveTypes().some(function (t) { return t.toLowerCase() === lower; });
+  }
+
   function getCompanyName() { return localStorage.getItem(STORAGE_KEYS.company) || ""; }
   function setCompanyName(name) { localStorage.setItem(STORAGE_KEYS.company, name); }
 
@@ -348,6 +378,7 @@
           return v !== undefined && v !== null && String(v).trim() !== "";
         });
       });
+      if (data.typeMeta) delete data.typeMeta[reportTypeName];
       saveMasterReportData(masterReportName, data);
     }
 
@@ -504,8 +535,14 @@
 
     data.uploadedFiles.push({ name: fileMeta.name, size: fileMeta.size });
     data.lastUpdated = new Date().toISOString();
+    // Per-Report-Type freshness, shown on the Preview/Analyse chips so old
+    // data is visibly old. Types merged before this field existed simply
+    // have no entry ("last updated: unknown").
+    if (!data.typeMeta) data.typeMeta = {};
+    data.typeMeta[reportTypeName] = { lastUpdated: data.lastUpdated, fileName: fileMeta.name };
     saveMasterReportData(masterReportName, data);
 
+    markReportTypeActive(reportTypeName);
     upsertMasterReportRegistry(masterReportName, reportTypeName, data.rows.length, data.lastUpdated);
   }
 
@@ -1142,6 +1179,7 @@
     renderProgressSection();
 
     var masterReports = getMasterReports();
+    document.getElementById("blueprintMarker").hidden = masterReports.length === 0;
     var emptyState = document.getElementById("templatesEmptyState");
     var list = document.getElementById("masterReportList");
     list.innerHTML = "";
@@ -1210,6 +1248,7 @@
             resetFileState();
             state.selectedMasterReport = mr.name;
             state.selectedReportType = typeName;
+            markReportTypeActive(typeName);
             showScreen("screen-upload");
           });
           wrap.appendChild(tile);
@@ -1371,6 +1410,7 @@
     state.selectedMasterReport = resolveExistingMasterReportName(masterReportName);
     state.selectedReportType = resolveExistingReportTypeName(reportTypeName);
     addReportType(state.selectedReportType);
+    markReportTypeActive(state.selectedReportType);
     recordSetupProgress(state.selectedMasterReport, state.selectedReportType, 2, null);
     showScreen("screen-upload");
   });
@@ -3078,21 +3118,21 @@
    * Screen: Preview & export
    * ------------------------------------------------------------------- */
   /* --- Preview scope ------------------------------------------------------
-   * The Preview & Export screen can show either just the Report Type that
-   * was uploaded this session (the default — an Amazon upload previews and
-   * exports only Amazon rows) or the whole Master Report (every Report
-   * Type merged). Pure view/export filter: the stored master data always
-   * keeps every Report Type's rows. The selector only appears when the
-   * master actually holds more than one Report Type.
+   * The Preview & Export screen defaults to "This session" — only the
+   * Report Types actually worked with during this browser visit (see
+   * markReportTypeActive). Data from untouched types never silently rides
+   * along; switching to "All Report Types" shows everything, with stale
+   * types clearly marked and offered for update/removal. Pure view/export
+   * filter: the stored master data always keeps every Report Type's rows.
    * ---------------------------------------------------------------------- */
-  var previewScope = "all"; // "type" | "all"
+  var previewScope = "session"; // "session" | "all"
 
   function previewRowInScope(row) {
-    return previewScope !== "type" || row["Report Type"] === state.selectedReportType;
+    return previewScope !== "session" || isReportTypeActive(row["Report Type"]);
   }
 
   document.getElementById("btnPreviewScopeType").addEventListener("click", function () {
-    previewScope = "type";
+    previewScope = "session";
     renderPreviewScreen();
   });
   document.getElementById("btnPreviewScopeAll").addEventListener("click", function () {
@@ -3101,9 +3141,7 @@
   });
 
   function goToPreviewStep() {
-    // Every arrival from an upload flow starts scoped to what was just
-    // uploaded; the full merged view is one click away.
-    previewScope = state.selectedReportType ? "type" : "all";
+    previewScope = "session";
     renderPreviewScreen();
     showScreen("screen-preview");
   }
@@ -3334,15 +3372,20 @@
     var exportColumns = data ? getEffectiveExportColumns(state.selectedReportType, data.columns) : [];
     var decoration = getExportDecorationFor(state.selectedReportType);
 
-    // Scope: fall back to the full view when there's nothing to scope to,
-    // and only offer the selector when the master holds 2+ Report Types.
-    var scopeAvailable = !!(state.selectedReportType && mr && mr.reportTypesUsed.length > 1);
-    if (!scopeAvailable) previewScope = "all";
+    // Scope: the selector only matters when the session view and the full
+    // view would differ (some type untouched this session). If NOTHING in
+    // this master is active — e.g. a fresh visit landing here indirectly —
+    // an empty session view would just look broken, so fall back to All.
+    var masterTypes = mr ? mr.reportTypesUsed : [];
+    var someActive = masterTypes.some(isReportTypeActive);
+    var someInactive = masterTypes.some(function (t) { return !isReportTypeActive(t); });
+    if (!someActive) previewScope = "all";
+    var scopeAvailable = someActive && someInactive;
     var scopeBar = document.getElementById("previewScopeBar");
     scopeBar.hidden = !scopeAvailable;
     if (scopeAvailable) {
-      document.getElementById("btnPreviewScopeType").textContent = "Only \"" + state.selectedReportType + "\"";
-      document.getElementById("btnPreviewScopeType").classList.toggle("missing-column-mode__btn--active", previewScope === "type");
+      document.getElementById("btnPreviewScopeType").textContent = "This session";
+      document.getElementById("btnPreviewScopeType").classList.toggle("missing-column-mode__btn--active", previewScope === "session");
       document.getElementById("btnPreviewScopeAll").classList.toggle("missing-column-mode__btn--active", previewScope === "all");
     }
 
@@ -3354,18 +3397,70 @@
     document.getElementById("previewMasterReportName").textContent = state.selectedMasterReport;
     document.getElementById("previewMeta").textContent =
       (scopedRows.length - deletedRowCount) + " total rows" +
-      (previewScope === "type" ? " (" + state.selectedReportType + " only)" : "") +
+      (previewScope === "session" && scopeAvailable ? " (this session)" : "") +
       (deletedRowCount ? " (" + deletedRowCount + " deleted from export)" : "") +
       " · Updated " + formatDateForDisplay(data ? data.lastUpdated : null);
 
+    // Chips carry each type's freshness; untouched types are visibly stale.
     var chips = document.getElementById("previewReportTypeChips");
     chips.innerHTML = "";
-    (mr ? mr.reportTypesUsed : []).forEach(function (t) {
+    masterTypes.forEach(function (t) {
       var chip = document.createElement("span");
-      chip.className = "chip";
-      chip.textContent = t;
+      var meta = data && data.typeMeta ? data.typeMeta[t] : null;
+      var active = isReportTypeActive(t);
+      chip.className = "chip" + (active ? "" : " chip--stale");
+      chip.textContent = t + " · " + (meta && meta.lastUpdated ? formatDateForDisplay(meta.lastUpdated) : "updated: unknown") + (active ? "" : " · not this session");
       chips.appendChild(chip);
     });
+
+    // In the All view, every stale type gets one line: when it was last
+    // updated, plus direct Update / Remove actions.
+    var staleNotice = document.getElementById("previewStaleNotice");
+    staleNotice.innerHTML = "";
+    var staleTypes = masterTypes.filter(function (t) { return !isReportTypeActive(t); });
+    staleNotice.hidden = !(previewScope === "all" && staleTypes.length > 0);
+    if (!staleNotice.hidden) {
+      staleTypes.forEach(function (t) {
+        var meta = data && data.typeMeta ? data.typeMeta[t] : null;
+        var line = document.createElement("div");
+        line.className = "stale-notice__line";
+        line.appendChild(document.createTextNode(
+          "\"" + t + "\" hasn't been touched this session (last updated: " +
+          (meta && meta.lastUpdated ? formatDateForDisplay(meta.lastUpdated) : "unknown") + "). "
+        ));
+        var updBtn = document.createElement("button");
+        updBtn.type = "button";
+        updBtn.className = "link-btn";
+        updBtn.textContent = "Upload new data";
+        updBtn.addEventListener("click", function () {
+          var master = state.selectedMasterReport;
+          resetFileState();
+          state.selectedMasterReport = master;
+          state.selectedReportType = t;
+          markReportTypeActive(t);
+          showScreen("screen-upload");
+        });
+        line.appendChild(updBtn);
+        line.appendChild(document.createTextNode(" · "));
+        var remBtn = document.createElement("button");
+        remBtn.type = "button";
+        remBtn.className = "link-btn";
+        remBtn.textContent = "Remove from this report";
+        remBtn.addEventListener("click", function () {
+          var count = getReportTypeRowCount(state.selectedMasterReport, t);
+          var ok = window.confirm(
+            "Remove \"" + t + "\" from \"" + state.selectedMasterReport + "\"?\n\n" +
+            "Its " + count + " row" + (count === 1 ? "" : "s") + " will be deleted from this Master Report. " +
+            "The Report Type's saved mapping and formulas stay available for reuse. This cannot be undone."
+          );
+          if (!ok) return;
+          deleteReportTypeFromMasterReport(state.selectedMasterReport, t);
+          renderPreviewScreen();
+        });
+        line.appendChild(remBtn);
+        staleNotice.appendChild(line);
+      });
+    }
 
     document.getElementById("previewExportMsg").hidden = true;
 
@@ -3773,11 +3868,15 @@
 
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Master Report");
-    // A scoped export is named after the Report Type it contains, so a
-    // June "Amazon Report" download can't be mistaken for the full master.
+    // A session-scoped export containing exactly one Report Type is named
+    // after it, so a June "Amazon Report" download can't be mistaken for
+    // the full master.
     var safeName = state.selectedMasterReport.replace(/[\\/:*?"<>|]/g, "_");
-    if (previewScope === "type" && state.selectedReportType) {
-      safeName += " - " + state.selectedReportType.replace(/[\\/:*?"<>|]/g, "_");
+    if (previewScope === "session") {
+      var exportedTypes = {};
+      activeRows.forEach(function (r) { if (r["Report Type"]) exportedTypes[r["Report Type"]] = true; });
+      var typeNames = Object.keys(exportedTypes);
+      if (typeNames.length === 1) safeName += " - " + typeNames[0].replace(/[\\/:*?"<>|]/g, "_");
     }
 
     function finish() {
@@ -5254,8 +5353,34 @@
     };
   }
 
-  document.getElementById("btnCustomiseAnalysis").addEventListener("click", function () {
+  // Same session rule as Preview & Export: the dashboard defaults to
+  // Report Types touched this browser visit, so both screens always show
+  // the same numbers. "All Report Types" is one click away.
+  var dashboardScope = "session"; // "session" | "all"
+
+  function getScopedDashboardData() {
     var data = getDashboardData(currentDashboardReport);
+    if (!data || currentDashboardReport === ANALYSE_SESSION_KEY || dashboardScope !== "session") return data;
+    return {
+      columns: data.columns,
+      rows: data.rows.filter(function (r) { return isReportTypeActive(r["Report Type"]); }),
+      uploadedFiles: data.uploadedFiles,
+      lastUpdated: data.lastUpdated,
+      typeMeta: data.typeMeta
+    };
+  }
+
+  document.getElementById("btnDashScopeSession").addEventListener("click", function () {
+    dashboardScope = "session";
+    renderDashboardScreen();
+  });
+  document.getElementById("btnDashScopeAll").addEventListener("click", function () {
+    dashboardScope = "all";
+    renderDashboardScreen();
+  });
+
+  document.getElementById("btnCustomiseAnalysis").addEventListener("click", function () {
+    var data = getScopedDashboardData();
     if (!data) return;
     renderCustomAnalysisChecklist(data);
     document.getElementById("dashboardCustomError").hidden = true;
@@ -5265,7 +5390,7 @@
     document.getElementById("dashboardCustomPanel").hidden = true;
   });
   document.getElementById("btnCustomAnalysisApply").addEventListener("click", function () {
-    var data = getDashboardData(currentDashboardReport);
+    var data = getScopedDashboardData();
     if (!data) return;
     var result = readCustomAnalysisSelections(data);
     if (!result) return;
@@ -5281,6 +5406,7 @@
     if (masterReportName !== ANALYSE_SESSION_KEY) {
       analyseColumnOverrides = null;
       analyseCompareMetrics = null;
+      dashboardScope = "session";
     }
     currentDashboardReport = masterReportName;
     renderDashboardScreen();
@@ -5289,8 +5415,24 @@
 
   function renderDashboardScreen() {
     var isAnalyseSession = currentDashboardReport === ANALYSE_SESSION_KEY;
-    var data = getDashboardData(currentDashboardReport);
     var mr = isAnalyseSession ? null : getMasterReport(currentDashboardReport);
+
+    // Same fallback as Preview: nothing active this visit → an empty
+    // "session" view helps nobody, so show everything with the toggle
+    // visibly set to All. The toggle only appears when the views differ.
+    var dashTypes = mr ? mr.reportTypesUsed : [];
+    var dashSomeActive = dashTypes.some(isReportTypeActive);
+    var dashSomeInactive = dashTypes.some(function (t) { return !isReportTypeActive(t); });
+    if (!isAnalyseSession && !dashSomeActive) dashboardScope = "all";
+    var dashScopeAvailable = !isAnalyseSession && dashSomeActive && dashSomeInactive;
+    var dashScopeBar = document.getElementById("dashScopeBar");
+    dashScopeBar.hidden = !dashScopeAvailable;
+    if (dashScopeAvailable) {
+      document.getElementById("btnDashScopeSession").classList.toggle("missing-column-mode__btn--active", dashboardScope === "session");
+      document.getElementById("btnDashScopeAll").classList.toggle("missing-column-mode__btn--active", dashboardScope === "all");
+    }
+
+    var data = getScopedDashboardData();
 
     // Back buttons match how this visit was entered: from the Preview
     // screen, from the Analyse-a-File setup, or from Home.
@@ -5300,7 +5442,9 @@
     document.getElementById("dashboardTitle").textContent = isAnalyseSession ? analyseFileName : currentDashboardReport;
     document.getElementById("dashboardSubtitle").textContent = isAnalyseSession
       ? (data ? data.rows.length : 0) + " rows · uploaded file"
-      : (data ? data.rows.length : 0) + " rows · Updated " + formatDateForDisplay(data ? data.lastUpdated : null);
+      : (data ? data.rows.length : 0) + " rows" +
+        (dashScopeAvailable && dashboardScope === "session" ? " (this session)" : "") +
+        " · Updated " + formatDateForDisplay(data ? data.lastUpdated : null);
     document.getElementById("dashboardCustomPanel").hidden = true;
     document.getElementById("dashboardCustomError").hidden = true;
 
